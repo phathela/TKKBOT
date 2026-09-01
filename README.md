@@ -27,6 +27,11 @@ Each alert carries a JSON message. A `side: "buy"` opens a long, `side: "sell"` 
 `side: "close"` closes whatever position is currently open on that symbol. TP/SL are attached
 **on the exchange** (not tracked in the bot), so they survive restarts and disconnects.
 
+> **Default strategy baked into the config:** BTCUSDT at **5x leverage**, auto-sizing that puts
+> **90% of your wallet balance** into each trade as margin, and a **stop-loss 4% from entry**
+> (4% price move × 5x = 20% of the margin used). Omit `qty`, `leverage` and `sl` in your alerts
+> and the bot applies these automatically; send explicit values to override (subject to the caps).
+
 | Field | Required | Notes |
 |---|---|---|
 | `secret` | yes | Must equal your `WEBHOOK_SECRET` env var |
@@ -133,13 +138,13 @@ Create an alert on a chart (or a strategy's order event). In the alert settings:
 | `BYBIT_TESTNET` | `false` | `true` = testnet keys + testnet API |
 | `WEBHOOK_SECRET` | — | Required; must match `"secret"` in every alert |
 | `TRADING_ENABLED` | `true` | Kill switch: `false` = accept + log, never trade |
-| `ALLOWED_SYMBOLS` | `BTCUSDT,ETHUSDT` | Comma-separated allowlist |
-| `MAX_QTY_PER_ORDER` | `1.0` | Reject larger quantities |
-| `MAX_NOTIONAL_USD` | `1000` | Reject orders above this notional (qty × live price) |
-| `MAX_LEVERAGE` | `5` | Reject alerts requesting more |
-| `MARGIN_USD_PER_TRADE` | `100` | Auto-size margin when an alert omits `qty` |
+| `ALLOWED_SYMBOLS` | `BTCUSDT` | Comma-separated allowlist |
+| `MAX_QTY_PER_ORDER` | `100.0` | Hard cap: reject larger quantities |
+| `MAX_NOTIONAL_USD` | `100000` | Hard cap: reject orders above this notional (qty × live price) |
+| `MAX_LEVERAGE` | `5` | Reject alerts requesting more (your strategy is 5x) |
+| `MARGIN_USAGE_PERCENT` | `0.90` | Auto-size uses 90% of wallet balance as margin per trade |
 | `DEFAULT_LEVERAGE` | `5` | Used when an alert omits `leverage` |
-| `DEFAULT_TP_PERCENT` / `DEFAULT_SL_PERCENT` | `0` | Fallback TP/SL decimals (`0.05` = 5%); `0` = attach nothing |
+| `DEFAULT_TP_PERCENT` / `DEFAULT_SL_PERCENT` | `0` / `0.04` | Fallback TP/SL decimals; `0.04` = 4% price move = 20% of margin at 5x |
 | `COOLDOWN_SECONDS` | `5` | Duplicate-alert suppression window |
 | `LOG_LEVEL` | `INFO` | `DEBUG` for more detail |
 | `PORT` | `8000` | Railway injects this automatically |

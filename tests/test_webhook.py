@@ -106,14 +106,14 @@ def test_disallowed_symbol_rejected():
 
 
 def test_qty_over_cap_rejected():
-    tc, client = make_app()
+    tc, client = make_app(max_qty_per_order=1.0)
     resp = tc.post("/webhook/tradingview", json=payload(qty=5))
     assert resp.status_code == 400
     assert client.orders == []
 
 
 def test_notional_over_cap_rejected():
-    tc, client = make_app()
+    tc, client = make_app(max_notional_usd=1000.0)
     resp = tc.post("/webhook/tradingview", json=payload(qty=0.02))  # 0.02 * 70000 = 1400 > 1000
     assert resp.status_code == 400
     assert client.orders == []
@@ -158,8 +158,8 @@ def test_auto_size_qty_when_omitted():
     data.pop("qty")
     resp = tc.post("/webhook/tradingview", json=data)
     assert resp.status_code == 200
-    # balance=1000, margin=min(1000,100)=100, lev=5, price=70000
-    assert client.orders[0]["qty"] == pytest.approx((100 * 5) / 70000)
+    # balance=1000, margin=90% = 900, lev=5, price=70000
+    assert client.orders[0]["qty"] == pytest.approx((1000 * 0.90 * 5) / 70000)
 
 
 def test_bybit_error_returns_502():

@@ -112,12 +112,13 @@ def _handle_webhook(raw: str, settings: Settings, client: BybitClient, cooldown:
     qty = signal.qty
     if qty is None:
         balance = client.get_balance()
-        margin = min(balance, settings.margin_usd_per_trade)
+        margin = balance * settings.margin_usage_percent  # e.g. 90% of wallet balance
         leverage = signal.leverage or settings.default_leverage
         qty = (margin * leverage) / price
         logger.info(
-            "Auto-sized qty %s for %s (margin=$%s x %sx, price=%s)",
-            qty, signal.symbol, margin, leverage, price,
+            "Auto-sized qty %s for %s (margin=$%s = %.0f%% of balance $%s, %sx, price=%s)",
+            qty, signal.symbol, margin, settings.margin_usage_percent * 100,
+            balance, leverage, price,
         )
 
     safety.validate_qty(qty, price, settings)

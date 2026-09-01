@@ -25,16 +25,16 @@ class Settings(BaseSettings):
 
     # --- Safety guardrails ---
     trading_enabled: bool = True
-    allowed_symbols: str = "BTCUSDT,ETHUSDT"
-    max_qty_per_order: float = 1.0
-    max_notional_usd: float = 1000.0
+    allowed_symbols: str = "BTCUSDT"
+    max_qty_per_order: float = 100.0
+    max_notional_usd: float = 100000.0
     max_leverage: int = 5
-    margin_usd_per_trade: float = 100.0
+    margin_usage_percent: float = 0.90  # auto-size uses 90% of wallet balance as margin
 
     # --- Defaults applied when an alert omits values ---
     default_leverage: int = 5
-    default_tp_percent: float = 0.0  # 0 = do not attach a take-profit
-    default_sl_percent: float = 0.0  # 0 = do not attach a stop-loss
+    default_tp_percent: float = 0.0   # 0 = do not attach a take-profit
+    default_sl_percent: float = 0.04  # 4% price move = 20% of margin at 5x leverage
 
     # --- Behaviour ---
     cooldown_seconds: int = 5
