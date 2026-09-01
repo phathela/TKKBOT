@@ -1,4 +1,5 @@
 import pytest
+from pybit.exceptions import InvalidRequestError
 
 from conftest import make_settings
 from app.bybit_client import BybitClient, BybitError, format_qty
@@ -96,6 +97,41 @@ def test_place_market_order_without_tp_sl_omits_fields():
 def test_set_leverage_ignores_110043():
     client = make_client(retcode=110043)
     client.set_leverage("BTCUSDT", 5)  # must not raise
+
+
+def test_set_leverage_ignores_110043_raised_as_exception():
+    """pybit raises InvalidRequestError for non-zero retCodes; 110043 must be swallowed."""
+    settings = make_settings()
+
+    class RaisingSession(FakeSession):
+        def set_leverage(self, **kwargs):
+            raise InvalidRequestError(
+                request="POST /v5/position/set-leverage: body",
+                message="leverage not modified",
+                status_code="110043",
+                time="00:00:00",
+            )
+
+    client = BybitClient(settings, session=RaisingSession())
+    client.set_leverage("BTCUSDT", 5)  # must not raise
+
+
+def test_set_leverage_raises_on_other_raised_errors():
+    """A non-benign error code must still surface as BybitError."""
+    settings = make_settings()
+
+    class FailingSession(FakeSession):
+        def set_leverage(self, **kwargs):
+            raise InvalidRequestError(
+                request="POST /v5/position/set-leverage: body",
+                message="invalid parameter",
+                status_code="10001",
+                time="00:00:00",
+            )
+
+    client = BybitClient(settings, session=FailingSession())
+    with pytest.raises(BybitError):
+        client.set_leverage("BTCUSDT", 5)
 
 
 def test_retcode_error_raises():

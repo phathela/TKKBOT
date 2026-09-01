@@ -94,6 +94,12 @@ class BybitClient:
                 sellLeverage=str(leverage),
             )
         except (InvalidRequestError, FailedRequestError) as e:
+            # pybit raises for any non-zero retCode, so 110043 arrives here as an
+            # exception carrying the code on ``status_code`` (Bybit HTTP-level
+            # errors put a number there, JSON retCodes put a string — accept both).
+            if str(getattr(e, "status_code", "")) == "110043":
+                logger.info("Leverage for %s already %sx (110043 ignored)", symbol, leverage)
+                return
             raise BybitError(f"set_leverage failed for {symbol}: {e}") from e
         if str(resp.get("retCode")) == "110043":
             logger.info("Leverage for %s already %sx (110043 ignored)", symbol, leverage)
