@@ -104,6 +104,36 @@ def _handle_webhook(raw: str, settings: Settings, client: BybitClient, cooldown:
             status_code=200,
         )
 
+    # Directional alert: force the position to MATCH the signal side, so the bot
+    # is always in the market — long on "buy", short on "sell". If an opposite
+    # position is open we close it (reduce-only) and open the target side; a
+    # same-direction alert while already positioned is a hold (no double).
+    position = client.get_position(signal.symbol)
+    target_side = "Buy" if signal.side == "buy" else "Sell"
+    if position is not None:
+        if position["side"] == target_side:
+            logger.info(
+                "Already %s %s (qty=%s, avg=%s) — holding on %s signal",
+                position["side"], signal.symbol, position["size"],
+                position["avg_price"], signal.side,
+            )
+            return JSONResponse(
+                {
+                    "accepted": True,
+                    "action": "hold",
+                    "symbol": signal.symbol,
+                    "side": position["side"],
+                    "reason": "already in this direction",
+                },
+                status_code=200,
+            )
+        # Opposite direction open -> reverse.
+        close_result = client.close_position(signal.symbol)
+        logger.info(
+            "Reversing %s -> %s on %s: closed %s",
+            position["side"], target_side, signal.symbol, close_result,
+        )
+
     # Entry order: resolve qty (auto-size from balance if omitted), TP/SL, leverage.
     price = client.get_price(signal.symbol)
     if price is None:
@@ -125,19 +155,19 @@ def _handle_webhook(raw: str, settings: Settings, client: BybitClient, cooldown:
 
     leverage = signal.leverage or settings.default_leverage
     tp, sl = client.compute_tp_sl(signal, price)
-    side = "Buy" if signal.side == "buy" else "Sell"
+    safety.validate_tp_sl_side(tp, sl, price, target_side)
     result = client.place_market_order(
-        signal.symbol, side, qty, leverage=leverage, tp=tp, sl=sl
+        signal.symbol, target_side, qty, leverage=leverage, tp=tp, sl=sl
     )
 
     logger.info("Entry executed: %s %s %s tp=%s sl=%s -> %s",
-                signal.symbol, side, qty, tp, sl, result)
+                signal.symbol, target_side, qty, tp, sl, result)
     return JSONResponse(
         {
             "accepted": True,
             "action": "entry",
             "symbol": signal.symbol,
-            "side": side,
+            "side": target_side,
             "qty": qty,
             "leverage": leverage,
             "tp": tp,

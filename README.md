@@ -23,8 +23,11 @@ TradingView alert (HTTP POST)  ──►  https://<project>.up.railway.app/webho
 
 ## What an alert does
 
-Each alert carries a JSON message. A `side: "buy"` opens a long, `side: "sell"` opens a short,
-`side: "close"` closes whatever position is currently open on that symbol. TP/SL are attached
+Each alert carries a JSON message. **The bot is always in the market**: a `side: "buy"`
+makes it long, a `side: "sell"` makes it short, flipping automatically when the direction
+changes — if an opposite position is open it is closed (reduce-only) and a fresh position is
+opened on the alert's side. A `side: "close"` closes whatever is open and goes flat. An alert
+that matches the current direction is a hold (never doubles up). TP/SL are attached
 **on the exchange** (not tracked in the bot), so they survive restarts and disconnects.
 
 > **Default strategy baked into the config:** BTCUSDT at **5x leverage**, auto-sizing that puts

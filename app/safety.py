@@ -70,6 +70,25 @@ def validate_leverage(leverage: int | None, settings: Settings) -> None:
         )
 
 
+def validate_tp_sl_side(tp: float | None, sl: float | None, price: float, side: str) -> None:
+    """TP/SL prices must sit on the correct side of the market for ``side``.
+
+    Buy (long): take-profit above price, stop-loss below.
+    Sell (short): take-profit below price, stop-loss above.
+
+    Last guard against ever sending an inverted stop-loss (e.g. a long-style SL
+    attached to a close/reversal order, or a short's SL placed below entry).
+    """
+    if tp is not None and (tp > price) != (side == "Buy"):
+        raise SafetyError(
+            f"takeProfit {tp} is on the wrong side for a {side} order at price {price}", 400
+        )
+    if sl is not None and (sl > price) != (side == "Sell"):
+        raise SafetyError(
+            f"stopLoss {sl} is on the wrong side for a {side} order at price {price}", 400
+        )
+
+
 def validate_qty(qty: float | None, price: float | None, settings: Settings) -> None:
     if qty is None:
         return

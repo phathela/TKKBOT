@@ -160,6 +160,19 @@ def test_close_position_flat_raises():
         client.close_position("BTCUSDT")
 
 
+def test_get_position_raises_on_api_error():
+    """An API failure must surface, not be mistaken for 'flat'."""
+    settings = make_settings()
+
+    class FailingSession(FakeSession):
+        def get_positions(self, **kwargs):
+            raise Exception("connection reset")  # noqa: BLE001
+
+    client = BybitClient(settings, session=FailingSession())
+    with pytest.raises(BybitError):
+        client.get_position("BTCUSDT")
+
+
 def test_close_position_qty_capped_at_position_size():
     client = make_client()
     client.session.positions = [

@@ -54,6 +54,9 @@ class BybitClient:
         """Return the current one-way position for ``symbol``, or None when flat.
 
         Result shape: ``{"side": "Buy"|"Sell", "size": float, "avg_price": float}``.
+        Raises ``BybitError`` on an API failure — callers must never confuse a
+        network/API error with "flat" (that would let a reversal order net against
+        a live position instead of flipping it).
         """
         try:
             resp = self.session.get_positions(category="linear", symbol=symbol)
@@ -65,9 +68,8 @@ class BybitClient:
                         "avg_price": float(pos.get("avgPrice") or 0),
                     }
             return None
-        except Exception:  # noqa: BLE001
-            logger.exception("Failed to fetch position for %s", symbol)
-            return None
+        except Exception as e:  # noqa: BLE001
+            raise BybitError(f"get_positions failed for {symbol}: {e}") from e
 
     def get_qty_step(self, symbol: str) -> float:
         """The symbol's minimum qty increment (``lotSizeFilter.qtyStep``), cached."""

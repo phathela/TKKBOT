@@ -11,6 +11,7 @@ from app.safety import (
     validate_qty,
     validate_secret,
     validate_symbol,
+    validate_tp_sl_side,
     validate_trading_enabled,
 )
 
@@ -84,3 +85,25 @@ def test_cooldown_zero_disabled():
     cooldown = Cooldown(seconds=0)
     assert cooldown.check("x") is True
     assert cooldown.check("x") is True
+
+
+def test_tp_sl_side_buy_long_is_valid():
+    validate_tp_sl_side(tp=72000, sl=68000, price=70000, side="Buy")
+    validate_tp_sl_side(tp=None, sl=68000, price=70000, side="Buy")
+    validate_tp_sl_side(tp=72000, sl=None, price=70000, side="Buy")
+
+
+def test_tp_sl_side_sell_short_is_valid():
+    validate_tp_sl_side(tp=68000, sl=72000, price=70000, side="Sell")
+    validate_tp_sl_side(tp=None, sl=72000, price=70000, side="Sell")
+
+
+def test_long_style_sl_rejected_for_sell():
+    with pytest.raises(SafetyError) as exc_info:
+        validate_tp_sl_side(tp=None, sl=68000, price=70000, side="Sell")  # below price = wrong for short
+    assert exc_info.value.status_code == 400
+
+
+def test_long_style_tp_rejected_for_buy_below():
+    with pytest.raises(SafetyError):
+        validate_tp_sl_side(tp=68000, sl=None, price=70000, side="Buy")  # tp below price = wrong for long

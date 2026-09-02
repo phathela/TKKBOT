@@ -14,12 +14,16 @@ class MockClient:
         self.orders = []
         self.price = 70000.0
         self.balance = 1000.0
+        self.position = None  # {"side": "Buy"|"Sell", "size": float, "avg_price": float}
 
     def get_price(self, symbol):
         return self.price
 
     def get_balance(self):
         return self.balance
+
+    def get_position(self, symbol):
+        return self.position
 
     def compute_tp_sl(self, signal, price):
         tp, sl = signal.tp, signal.sl
@@ -160,6 +164,68 @@ def test_auto_size_qty_when_omitted():
     assert resp.status_code == 200
     # balance=1000, margin=90% = 900, lev=5, price=70000
     assert client.orders[0]["qty"] == pytest.approx((1000 * 0.90 * 5) / 70000)
+
+
+def test_hold_when_already_long():
+    tc, client = make_app()
+    client.position = {"side": "Buy", "size": 0.001, "avg_price": 70000.0}
+    resp = tc.post("/webhook/tradingview", json=payload(side="buy"))
+    assert resp.status_code == 200
+    assert resp.json()["action"] == "hold"
+    assert client.orders == []
+
+
+def test_buy_alert_reverses_open_short():
+    tc, client = make_app()
+    client.position = {"side": "Sell", "size": 0.001, "avg_price": 69000.0}
+    resp = tc.post("/webhook/tradingview", json=payload(side="buy"))
+    assert resp.status_code == 200
+    assert resp.json()["action"] == "entry"
+    assert client.orders == [
+        {"symbol": "BTCUSDT", "close": True, "qty": None},
+        {"symbol": "BTCUSDT", "side": "Buy", "qty": 0.001, "leverage": 5, "tp": 72000, "sl": 66000},
+    ]
+
+
+def sell_payload():
+    data = payload(side="sell")
+    data["tp"] = 68000
+    data["sl"] = 73000
+    return data
+
+
+def test_sell_alert_opens_short_when_flat():
+    tc, client = make_app()
+    resp = tc.post("/webhook/tradingview", json=sell_payload())
+    assert resp.status_code == 200
+    assert resp.json()["action"] == "entry"
+    assert resp.json()["side"] == "Sell"
+    assert client.orders == [
+        {"symbol": "BTCUSDT", "side": "Sell", "qty": 0.001, "leverage": 5, "tp": 68000, "sl": 73000},
+    ]
+
+
+def test_sell_alert_reverses_open_long():
+    tc, client = make_app()
+    client.position = {"side": "Buy", "size": 0.001, "avg_price": 70000.0}
+    resp = tc.post("/webhook/tradingview", json=sell_payload())
+    assert resp.status_code == 200
+    assert resp.json()["action"] == "entry"
+    assert resp.json()["side"] == "Sell"
+    assert client.orders == [
+        {"symbol": "BTCUSDT", "close": True, "qty": None},
+        {"symbol": "BTCUSDT", "side": "Sell", "qty": 0.001, "leverage": 5, "tp": 68000, "sl": 73000},
+    ]
+
+
+def test_wrong_side_sl_rejected():
+    """A long-style SL on a sell alert must be refused, not sent to Bybit."""
+    tc, client = make_app()
+    data = sell_payload()
+    data["sl"] = 66000  # below market = invalid for a Sell (short)
+    resp = tc.post("/webhook/tradingview", json=data)
+    assert resp.status_code == 400
+    assert client.orders == []
 
 
 def test_bybit_error_returns_502():
