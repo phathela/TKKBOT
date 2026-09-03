@@ -81,7 +81,9 @@ class BybitClient:
         "unrealised_pnl"}``. Raises ``BybitError`` on API failure.
         """
         try:
-            resp = self.session.get_positions(category="linear")
+            # For the linear category Bybit requires a symbol or settleCoin; pass
+            # the settle coin to list every open USDT-perp position in one call.
+            resp = self.session.get_positions(category="linear", settleCoin="USDT")
         except Exception as e:  # noqa: BLE001
             raise BybitError(f"get_positions failed: {e}") from e
         positions = []

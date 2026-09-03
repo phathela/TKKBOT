@@ -174,6 +174,30 @@ def test_get_position_raises_on_api_error():
         client.get_position("BTCUSDT")
 
 
+def test_get_all_positions_passes_settle_coin_and_parses():
+    """Bybit linear position-list needs symbol or settleCoin; all-pairs query uses USDT."""
+    client = make_client()
+    client.session.positions = [
+        {"positionIdx": 0, "symbol": "BTCUSDT", "side": "Sell", "size": "0.5",
+         "avgPrice": "70000", "stopLoss": "73000", "takeProfit": "",
+         "unrealisedPnl": "12.5"},
+        {"positionIdx": 0, "symbol": "ETHUSDT", "side": "Buy", "size": "1.0",
+         "avgPrice": "3000", "stopLoss": "", "takeProfit": "3100",
+         "unrealisedPnl": "-3.0"},
+        {"symbol": "SOLUSDT", "size": "0", "positionIdx": 0},  # flat row: ignored
+    ]
+    positions = client.get_all_positions()
+    name, params = client.session.calls[-1]
+    assert name == "get_positions"
+    assert params == {"category": "linear", "settleCoin": "USDT"}
+    assert positions == [
+        {"symbol": "BTCUSDT", "side": "Sell", "size": 0.5, "avg_price": 70000.0,
+         "sl": 73000.0, "tp": None, "unrealised_pnl": 12.5},
+        {"symbol": "ETHUSDT", "side": "Buy", "size": 1.0, "avg_price": 3000.0,
+         "sl": None, "tp": 3100.0, "unrealised_pnl": -3.0},
+    ]
+
+
 def test_close_position_qty_capped_at_position_size():
     client = make_client()
     client.session.positions = [
