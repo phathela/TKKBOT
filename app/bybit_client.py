@@ -78,7 +78,9 @@ class BybitClient:
         """Every open one-way position across symbols (dashboard status panel).
 
         Each row: ``{"symbol", "side", "size", "avg_price", "sl", "tp",
-        "unrealised_pnl"}``. Raises ``BybitError`` on API failure.
+        "unrealised_pnl", "mark_price", "leverage", "pnl_percent"}``. ``sl``/``tp``
+        are the real live levels overlaid from Bybit's open stop-orders (order-level
+        TP/SL do not appear on the position row). Raises ``BybitError`` on API failure.
         """
         try:
             # For the linear category Bybit requires a symbol or settleCoin; pass
@@ -89,16 +91,48 @@ class BybitClient:
         positions = []
         for pos in resp["result"]["list"]:
             if pos.get("positionIdx") == 0 and float(pos.get("size") or 0) > 0:
+                avg_price = float(pos.get("avgPrice") or 0)
+                size = float(pos.get("size") or 0)
+                unrealised = float(pos.get("unrealisedPnl") or 0)
+                leverage = _optional_int(pos.get("leverage"))
+                margin = avg_price * size / leverage if leverage else 0.0
                 positions.append({
                     "symbol": pos["symbol"],
                     "side": pos["side"],
-                    "size": float(pos["size"]),
-                    "avg_price": float(pos.get("avgPrice") or 0),
+                    "size": size,
+                    "avg_price": avg_price,
                     "sl": _optional_price(pos.get("stopLoss")),
                     "tp": _optional_price(pos.get("takeProfit")),
-                    "unrealised_pnl": float(pos.get("unrealisedPnl") or 0),
+                    "unrealised_pnl": unrealised,
+                    "mark_price": _optional_price(pos.get("markPrice")),
+                    "leverage": leverage,
+                    "pnl_percent": unrealised / margin * 100 if margin > 0 else None,
                 })
+        try:
+            stop_rows = self.get_open_stop_orders()
+        except BybitError:
+            logger.warning("Could not read open stop-orders; SL/TP shown from position row")
+        else:
+            _attach_stop_levels(positions, stop_rows)
         return positions
+
+    def get_open_stop_orders(self) -> list[dict]:
+        """Open conditional/stop orders across symbols (order-level TP/SL included).
+
+        Bybit V5 keeps order-level (``tpslMode=Partial``) take-profit and stop-loss
+        as separate conditional orders rather than on the position row, so this is
+        the authoritative source for the real live SL/TP prices (the dashboard's
+        stop-loss column). Rows carry ``symbol``, ``stopOrderType`` (e.g.
+        ``PartialStopLoss``/``PartialTakeProfit``), ``triggerPrice``, ``reduceOnly``
+        and ``orderStatus``.
+        """
+        try:
+            resp = self.session.get_open_orders(
+                category="linear", settleCoin="USDT", orderFilter="StopOrder", limit=50
+            )
+        except Exception as e:  # noqa: BLE001
+            raise BybitError(f"get_open_orders failed: {e}") from e
+        return list(resp.get("result", {}).get("list", []) or [])
 
     def list_pairs(self, query: str = "", limit: int = 50) -> list[str]:
         """USDT perpetual pairs currently traded on Bybit linear (dashboard picker).
@@ -311,3 +345,85 @@ def _optional_price(raw) -> float | None:
         return float(raw)
     except (TypeError, ValueError):
         return None
+
+
+def _optional_int(raw) -> int | None:
+    """Coerce a Bybit number string ('' for unset) to int, tolerating floats."""
+    if raw in (None, ""):
+        return None
+    try:
+        return int(float(raw))
+    except (TypeError, ValueError):
+        return None
+
+
+def _stop_price(row: dict) -> float | None:
+    """The price of a stop-order row: explicit field first, else its trigger."""
+    for field in ("stopLoss", "takeProfit", "triggerPrice"):
+        price = _optional_price(row.get(field))
+        if price is not None:
+            return price
+    return None
+
+
+def _row_level(row: dict, entry: float, side: str) -> str | None:
+    """Is a conditional-order row a stop-loss or a take-profit for this position?
+
+    Bybit's ``stopOrderType`` names the side (``PartialStopLoss``,
+    ``PartialTakeProfit``, ``StopLoss``, ``TakeProfit``); when absent, fall back
+    to where the trigger sits relative to the entry price — for a long, a
+    stop-loss protects below entry and a take-profit sits above; the mirror for
+    a short.
+    """
+    otype = str(row.get("stopOrderType") or "")
+    if "StopLoss" in otype or otype == "Stop":
+        return "sl"
+    if "TakeProfit" in otype:
+        return "tp"
+    price = _optional_price(row.get("triggerPrice"))
+    if price is None:
+        return None
+    if side == "Buy":
+        return "sl" if price < entry else "tp"
+    return "sl" if price > entry else "tp"  # Sell: SL triggers on a rise, TP on a fall
+
+
+def _attach_stop_levels(positions: list[dict], stop_rows: list[dict]) -> list[dict]:
+    """Overlay real live SL/TP prices onto position rows from open stop-orders.
+
+    Two representations are handled:
+    - ``tpslMode=Partial`` (what TKKBOT uses): each SL/TP is its own conditional
+      order with ``stopOrderType`` + ``triggerPrice``.
+    - a full-mode order row carrying explicit ``stopLoss`` and/or ``takeProfit``
+      fields (both are assigned directly when present).
+
+    Only still-live orders (status New/Untriggered) represent the current
+    protection; a filled/cancelled SL/TP within the recent-orders window must
+    not be shown as live.
+    """
+    for pos in positions:
+        entry = pos.get("avg_price") or 0.0
+        side = pos.get("side")
+        for row in stop_rows:
+            if row.get("symbol") != pos["symbol"]:
+                continue
+            status = str(row.get("orderStatus") or "")
+            if status and status not in ("New", "Untriggered"):
+                continue
+            explicit_sl = _optional_price(row.get("stopLoss"))
+            explicit_tp = _optional_price(row.get("takeProfit"))
+            if explicit_sl is not None:
+                pos["sl"] = explicit_sl
+            if explicit_tp is not None:
+                pos["tp"] = explicit_tp
+            if explicit_sl is not None or explicit_tp is not None:
+                continue  # full-mode row already handled both sides
+            price = _optional_price(row.get("triggerPrice"))
+            if price is None:
+                continue
+            level = _row_level(row, entry, side)
+            if level == "sl":
+                pos["sl"] = price
+            elif level == "tp":
+                pos["tp"] = price
+    return positions

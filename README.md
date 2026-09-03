@@ -48,8 +48,11 @@ Open `https://<project>.up.railway.app/dashboard` and sign in with `DASHBOARD_PA
 - **Stop-loss distance %** and an optional **take-profit distance %** (0 = no TP).
 - **Allowed pairs** — search the real Bybit perpetual list (e.g. `ETHUSDT`, `1000PEPEUSDT`)
   and add/remove them. Alerts trade whichever allowed pair they name.
-- **Live status** — USDT wallet balance and every open position per allowed pair, with its
-  live exchange SL/TP, plus a per-pair **Close** button (reduce-only).
+- **Live status** — USDT wallet balance and every open position per allowed pair: side,
+  size, entry, live mark price, the **real SL/TP read from Bybit's open stop-orders**
+  (TKKBOT attaches these order-level, so they do not appear on the position row), live PnL in
+  dollars and as a % of the position margin, plus a per-pair **Close** button (reduce-only).
+  The panel auto-refreshes every ~10 seconds.
 
 Changes are saved to a JSON file (see `TKKBOT_CONFIG_PATH`) and take effect on the **next
 entry**. They do not move the stop-loss of a position that is already open — send the opposite

@@ -87,14 +87,21 @@ def test_state_only_lists_allowed_positions(tmp_path):
     client = FakeClient()
     client.positions = [
         {"symbol": "BTCUSDT", "side": "Sell", "size": 0.011, "avg_price": 77222.0,
-         "sl": 80310.8, "tp": None, "unrealised_pnl": 0.05},
+         "sl": 80310.8, "tp": None, "unrealised_pnl": 0.05,
+         "mark_price": 78110.0, "leverage": 5, "pnl_percent": 0.011},
         {"symbol": "SOLUSDT", "side": "Buy", "size": 10.0, "avg_price": 150.0,
-         "sl": None, "tp": None, "unrealised_pnl": 0.0},
+         "sl": None, "tp": None, "unrealised_pnl": 0.0,
+         "mark_price": 149.0, "leverage": None, "pnl_percent": None},
     ]
     tc, _ = build_app(tmp_path / "cfg.json", client=client)
     login(tc)
     positions = tc.get("/api/dashboard/state").json()["positions"]
     assert [p["symbol"] for p in positions] == ["BTCUSDT"]  # SOL not allowed yet
+    # The live-detail fields added for the Status card flow through unchanged.
+    assert positions[0]["sl"] == 80310.8
+    assert positions[0]["mark_price"] == 78110.0
+    assert positions[0]["leverage"] == 5
+    assert positions[0]["pnl_percent"] == pytest.approx(0.011)
 
 
 def test_config_update_via_api(tmp_path):

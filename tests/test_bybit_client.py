@@ -17,6 +17,7 @@ class FakeSession:
         self.last_price = "70000"
         self.wallet_balance = "1000"
         self.positions = []
+        self.open_orders = []
         self.tickers = [{"symbol": "BTCUSDT", "lastPrice": self.last_price}]
 
     def _ok(self, result):
@@ -45,6 +46,10 @@ class FakeSession:
     def get_positions(self, **kwargs):
         self.calls.append(("get_positions", kwargs))
         return self._ok({"list": self.positions})
+
+    def get_open_orders(self, **kwargs):
+        self.calls.append(("get_open_orders", kwargs))
+        return self._ok({"list": self.open_orders})
 
 
 def make_client(retcode=0, **settings_overrides):
@@ -187,14 +192,15 @@ def test_get_all_positions_passes_settle_coin_and_parses():
         {"symbol": "SOLUSDT", "size": "0", "positionIdx": 0},  # flat row: ignored
     ]
     positions = client.get_all_positions()
-    name, params = client.session.calls[-1]
-    assert name == "get_positions"
-    assert params == {"category": "linear", "settleCoin": "USDT"}
+    get_pos_calls = [(n, p) for n, p in client.session.calls if n == "get_positions"]
+    assert get_pos_calls == [("get_positions", {"category": "linear", "settleCoin": "USDT"})]
     assert positions == [
         {"symbol": "BTCUSDT", "side": "Sell", "size": 0.5, "avg_price": 70000.0,
-         "sl": 73000.0, "tp": None, "unrealised_pnl": 12.5},
+         "sl": 73000.0, "tp": None, "unrealised_pnl": 12.5,
+         "mark_price": None, "leverage": None, "pnl_percent": None},
         {"symbol": "ETHUSDT", "side": "Buy", "size": 1.0, "avg_price": 3000.0,
-         "sl": None, "tp": 3100.0, "unrealised_pnl": -3.0},
+         "sl": None, "tp": 3100.0, "unrealised_pnl": -3.0,
+         "mark_price": None, "leverage": None, "pnl_percent": None},
     ]
 
 
@@ -270,3 +276,135 @@ def test_format_qty():
     assert format_qty(0.001) == "0.001"
     assert format_qty(1.0) == "1"
     assert format_qty(0.00000123) == "0.00000123"
+
+
+# ------------------------------------------------------------------ stop orders
+
+
+def test_get_open_stop_orders_queries_and_parses():
+    """All-pairs stop-order read passes settleCoin + StopOrder filter (open-orders
+    endpoint needs a symbol/baseCoin/settleCoin for linear)."""
+    client = make_client()
+    client.session.open_orders = [
+        {"symbol": "BTCUSDT", "stopOrderType": "PartialStopLoss", "triggerPrice": "83982.2"},
+    ]
+    rows = client.get_open_stop_orders()
+    assert rows[0]["stopOrderType"] == "PartialStopLoss"
+    name, params = client.session.calls[-1]
+    assert name == "get_open_orders"
+    assert params == {
+        "category": "linear", "settleCoin": "USDT",
+        "orderFilter": "StopOrder", "limit": 50,
+    }
+
+
+def test_get_open_stop_orders_raises_on_api_error():
+    settings = make_settings()
+
+    class FailingSession(FakeSession):
+        def get_open_orders(self, **kwargs):
+            raise Exception("connection reset")  # noqa: BLE001
+
+    client = BybitClient(settings, session=FailingSession())
+    with pytest.raises(BybitError):
+        client.get_open_stop_orders()
+
+
+def test_get_all_positions_overlays_real_sl_tp_from_partial_stop_orders():
+    """Partial-mode TP/SL live as separate conditional orders (position-row fields
+    are empty for perps); the merge must surface the real levels + live fields.
+
+    Mirrors the user's live trade: a BTC short whose 4%-above SL sits as an
+    Untriggered PartialStopLoss order.
+    """
+    client = make_client()
+    client.session.positions = [
+        {"positionIdx": 0, "symbol": "BTCUSDT", "side": "Sell", "size": "0.011",
+         "avgPrice": "80752.2", "stopLoss": "", "takeProfit": "",
+         "unrealisedPnl": "-23.4", "markPrice": "81600.5", "leverage": "5"},
+    ]
+    client.session.open_orders = [
+        {"symbol": "BTCUSDT", "stopOrderType": "PartialStopLoss", "side": "Buy",
+         "triggerPrice": "83982.2", "reduceOnly": True, "closeOnTrigger": True,
+         "orderStatus": "Untriggered"},
+        {"symbol": "BTCUSDT", "stopOrderType": "PartialTakeProfit", "side": "Buy",
+         "triggerPrice": "77000.0", "reduceOnly": True, "closeOnTrigger": True,
+         "orderStatus": "Untriggered"},
+    ]
+    positions = client.get_all_positions()
+    pos = positions[0]
+    assert pos["sl"] == 83982.2   # real SL from the open stop-order, not the empty row
+    assert pos["tp"] == 77000.0
+    assert pos["mark_price"] == 81600.5
+    assert pos["leverage"] == 5
+    margin = 80752.2 * 0.011 / 5
+    assert pos["pnl_percent"] == pytest.approx(-23.4 / margin * 100)
+
+
+def test_get_all_positions_full_mode_row_explicit_fields():
+    """A Full-mode order row carrying explicit stopLoss/takeProfit sets both directly."""
+    client = make_client()
+    client.session.positions = [
+        {"positionIdx": 0, "symbol": "BTCUSDT", "side": "Buy", "size": "0.5",
+         "avgPrice": "70000", "stopLoss": "", "takeProfit": "", "unrealisedPnl": "0"},
+    ]
+    client.session.open_orders = [
+        {"symbol": "BTCUSDT", "orderStatus": "New", "side": "Sell", "reduceOnly": True,
+         "stopLoss": "67000", "takeProfit": "73000"},
+    ]
+    positions = client.get_all_positions()
+    assert positions[0]["sl"] == 67000.0
+    assert positions[0]["tp"] == 73000.0
+
+
+def test_attach_stop_levels_price_relative_fallback_and_ignores_nonlive():
+    """Rows without stopOrderType are classified by where the trigger sits vs entry;
+    a filled/cancelled order within the recent window must not show as live."""
+    client = make_client()
+    client.session.positions = [
+        {"positionIdx": 0, "symbol": "BTCUSDT", "side": "Buy", "size": "0.5",
+         "avgPrice": "70000", "stopLoss": "", "takeProfit": "", "unrealisedPnl": "0"},
+    ]
+    client.session.open_orders = [
+        {"symbol": "BTCUSDT", "orderStatus": "Filled", "side": "Sell", "reduceOnly": True,
+         "triggerPrice": "66000"},  # stale — must not be shown as live SL
+        {"symbol": "BTCUSDT", "orderStatus": "Untriggered", "side": "Sell", "reduceOnly": True,
+         "triggerPrice": "73000"},  # above a Buy entry → take-profit
+        {"symbol": "BTCUSDT", "orderStatus": "Untriggered", "side": "Sell", "reduceOnly": True,
+         "triggerPrice": "66000"},  # below a Buy entry → stop-loss
+    ]
+    positions = client.get_all_positions()
+    assert positions[0]["sl"] == 66000.0
+    assert positions[0]["tp"] == 73000.0
+
+
+def test_get_all_positions_stop_order_read_failure_keeps_position_row_levels():
+    """If the stop-order read fails the position-row SL/TP remain the fallback —
+    never a crash, never a missing column."""
+    settings = make_settings()
+
+    class NoStopOrdersSession(FakeSession):
+        def get_open_orders(self, **kwargs):
+            raise Exception("boom")  # noqa: BLE001
+
+    client = BybitClient(settings, session=NoStopOrdersSession())
+    client.session.positions = [
+        {"positionIdx": 0, "symbol": "BTCUSDT", "side": "Buy", "size": "0.5",
+         "avgPrice": "70000", "stopLoss": "67000", "takeProfit": "",
+         "unrealisedPnl": "0"},
+    ]
+    positions = client.get_all_positions()
+    assert positions[0]["sl"] == 67000.0
+
+
+def test_pnl_percent_none_without_leverage():
+    """pnl_percent needs the position margin (needs leverage); absent → None."""
+    client = make_client()
+    client.session.positions = [
+        {"positionIdx": 0, "symbol": "BTCUSDT", "side": "Buy", "size": "0.5",
+         "avgPrice": "70000", "unrealisedPnl": "12.5"},  # no markPrice/leverage keys
+    ]
+    positions = client.get_all_positions()
+    assert positions[0]["leverage"] is None
+    assert positions[0]["mark_price"] is None
+    assert positions[0]["pnl_percent"] is None

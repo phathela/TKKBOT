@@ -75,6 +75,7 @@
   td{padding:7px 8px;border-bottom:1px solid var(--panel2)}
   .side-buy{color:var(--buy);font-weight:700}
   .side-sell{color:var(--sell);font-weight:700}
+  .up{color:var(--good)} .down{color:var(--bad)}
   .banner{border-radius:10px;padding:10px 12px;margin-bottom:16px;font-size:13px}
   .banner.err{background:rgba(255,92,92,.12);border:1px solid var(--bad);color:#ffb3b3}
   .banner.warn{background:rgba(245,185,66,.1);border:1px solid var(--warn);color:#ffd78a}
@@ -182,8 +183,8 @@
         <span class="muted">Wallet balance</span><span class="mono" id="wallet">—</span>
       </div>
       <table>
-        <thead><tr><th>Pair</th><th>Side</th><th>Size (BTC)</th><th>Avg price</th>
-                <th>SL</th><th>TP</th><th>uPnL</th><th></th></tr></thead>
+        <thead><tr><th>Pair</th><th>Side</th><th>Size</th><th>Entry</th><th>Last</th>
+                <th>SL</th><th>TP</th><th>PnL $</th><th>PnL %</th><th></th></tr></thead>
         <tbody id="posRows"></tbody>
       </table>
       <p class="hint" id="liveHint"></p>
@@ -223,6 +224,7 @@ function toast(msg, isErr = false) {
 
 /* ---------- views ---------- */
 function showLogin() {
+  stopLiveRefresh();
   $("login").classList.remove("hidden");
   $("app").classList.add("hidden");
 }
@@ -230,6 +232,7 @@ function showApp() {
   $("login").classList.add("hidden");
   $("app").classList.remove("hidden");
   refresh();
+  startLiveRefresh();
 }
 
 /* ---------- state rendering ---------- */
@@ -304,7 +307,7 @@ function renderLive(s) {
   const open = new Map(s.positions.map(p => [p.symbol, p]));
   const rows = s.allowed_symbols.map(sym => {
     const p = open.get(sym);
-    if (!p) return `<tr><td><b>${esc(sym)}</b></td><td class="muted" colspan="6">flat</td><td></td></tr>`;
+    if (!p) return `<tr><td><b>${esc(sym)}</b></td><td class="muted" colspan="8">flat</td><td></td></tr>`;
     const sideCls = p.side === "Buy" ? "side-buy" : "side-sell";
     const sideTxt = p.side === "Buy" ? "LONG" : "SHORT";
     return `<tr>
@@ -312,9 +315,11 @@ function renderLive(s) {
       <td class="${sideCls}">${sideTxt}</td>
       <td class="mono">${p.size}</td>
       <td class="mono">${fmtPrice(p.avg_price)}</td>
+      <td class="mono">${fmtPrice(p.mark_price)}</td>
       <td class="mono">${p.sl ? fmtPrice(p.sl) : "—"}</td>
       <td class="mono">${p.tp ? fmtPrice(p.tp) : "—"}</td>
-      <td class="mono">${fmtSigned(p.unrealised_pnl)}</td>
+      <td class="mono${pnlCls(p.unrealised_pnl)}">${fmtSigned(p.unrealised_pnl)}</td>
+      <td class="mono${pnlCls(p.pnl_percent)}">${fmtPct(p.pnl_percent)}</td>
       <td><button class="danger" data-close="${esc(p.symbol)}">Close</button></td>
     </tr>`;
   }).join("");
@@ -337,6 +342,15 @@ function fmtSigned(v) {
   const n = Number(v);
   return (n > 0 ? "+" : "") + fmtUSD(n);
 }
+function fmtPct(v) {
+  if (v === null || v === undefined) return "—";
+  const n = Number(v);
+  return (n > 0 ? "+" : "") + Number(n).toFixed(2) + "%";
+}
+function pnlCls(v) {
+  const n = Number(v);
+  return n > 0 ? " up" : (n < 0 ? " down" : "");
+}
 
 /* ---------- actions ---------- */
 async function refresh() {
@@ -346,6 +360,30 @@ async function refresh() {
   } catch (e) {
     if (e.message !== "auth") showLogin();
   }
+}
+// Auto-refresh only the live block (wallet, banners, position rows, hint) every
+// ~10 s so prices/PnL stay current. It never calls setRiskInputs / applyState's
+// risk fields, so a config the user is mid-editing is not clobbered.
+let liveTimer = null, liveFetching = false;
+async function refreshLive() {
+  if (liveFetching) return;          // skip a tick if the last fetch is still out
+  liveFetching = true;
+  try {
+    const s = await api("/api/dashboard/state");
+    state.data = s;
+    renderLive(s);
+  } catch (e) {
+    if (e.message === "auth") { stopLiveRefresh(); showLogin(); }
+  } finally {
+    liveFetching = false;
+  }
+}
+function startLiveRefresh() {
+  if (liveTimer) return;
+  liveTimer = setInterval(refreshLive, 10000);
+}
+function stopLiveRefresh() {
+  if (liveTimer) { clearInterval(liveTimer); liveTimer = null; }
 }
 async function postConfig(patch, okMsg) {
   try {
