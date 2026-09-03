@@ -6,6 +6,7 @@ and translates responses/errors for the rest of TKKBOT.
 """
 import logging
 import math
+import time
 import uuid
 
 from pybit.exceptions import FailedRequestError, InvalidRequestError
@@ -31,6 +32,8 @@ class BybitClient:
             api_secret=settings.bybit_api_secret,
         )
         self._qty_step_cache: dict[str, float] = {}
+        self._pairs_cache: list[str] | None = None
+        self._pairs_cache_ts: float = 0.0
 
     # ------------------------------------------------------------------ reads
 
@@ -70,6 +73,64 @@ class BybitClient:
             return None
         except Exception as e:  # noqa: BLE001
             raise BybitError(f"get_positions failed for {symbol}: {e}") from e
+
+    def get_all_positions(self) -> list[dict]:
+        """Every open one-way position across symbols (dashboard status panel).
+
+        Each row: ``{"symbol", "side", "size", "avg_price", "sl", "tp",
+        "unrealised_pnl"}``. Raises ``BybitError`` on API failure.
+        """
+        try:
+            resp = self.session.get_positions(category="linear")
+        except Exception as e:  # noqa: BLE001
+            raise BybitError(f"get_positions failed: {e}") from e
+        positions = []
+        for pos in resp["result"]["list"]:
+            if pos.get("positionIdx") == 0 and float(pos.get("size") or 0) > 0:
+                positions.append({
+                    "symbol": pos["symbol"],
+                    "side": pos["side"],
+                    "size": float(pos["size"]),
+                    "avg_price": float(pos.get("avgPrice") or 0),
+                    "sl": _optional_price(pos.get("stopLoss")),
+                    "tp": _optional_price(pos.get("takeProfit")),
+                    "unrealised_pnl": float(pos.get("unrealisedPnl") or 0),
+                })
+        return positions
+
+    def list_pairs(self, query: str = "", limit: int = 50) -> list[str]:
+        """USDT perpetual pairs currently traded on Bybit linear (dashboard picker).
+
+        Pulled from the public tickers endpoint and cached for 15 minutes.
+        """
+        now = time.time()
+        if self._pairs_cache is None or now - self._pairs_cache_ts > 900:
+            try:
+                resp = self.session.get_tickers(category="linear")
+                pairs = sorted({
+                    row["symbol"] for row in resp["result"]["list"]
+                    if str(row["symbol"]).endswith("USDT")
+                })
+            except Exception as e:  # noqa: BLE001
+                raise BybitError(f"Could not fetch Bybit pair list: {e}") from e
+            self._pairs_cache = pairs
+            self._pairs_cache_ts = now
+        pairs = list(self._pairs_cache)
+        needle = query.strip().upper()
+        if needle:
+            pairs = [p for p in pairs if needle in p]
+        if "BTCUSDT" in pairs:
+            pairs.remove("BTCUSDT")
+            pairs.insert(0, "BTCUSDT")
+        return pairs[:limit]
+
+    def pair_exists(self, symbol: str) -> bool:
+        """True if ``symbol`` is a real Bybit linear instrument (used to validate adds)."""
+        try:
+            resp = self.session.get_instruments_info(category="linear", symbol=symbol)
+            return bool(resp.get("result", {}).get("list"))
+        except Exception:  # noqa: BLE001
+            return False
 
     def get_qty_step(self, symbol: str) -> float:
         """The symbol's minimum qty increment (``lotSizeFilter.qtyStep``), cached."""
@@ -184,16 +245,29 @@ class BybitClient:
         )
         return {"order_id": result.get("orderId"), "closed_qty": close_qty}
 
-    def compute_tp_sl(self, signal: TradeSignal, price: float) -> tuple[float | None, float | None]:
-        """Resolve (tp, sl) prices for an entry: explicit alert values win, else percent defaults."""
+    def compute_tp_sl(
+        self,
+        signal: TradeSignal,
+        price: float,
+        tp_percent: float | None = None,
+        sl_percent: float | None = None,
+    ) -> tuple[float | None, float | None]:
+        """Resolve (tp, sl) prices for an entry.
+
+        Explicit alert prices win; otherwise the percent defaults are applied
+        (side-aware: buy TP above, sell TP below). Passing ``tp_percent`` /
+        ``sl_percent`` overrides the env defaults — the dashboard does this.
+        """
+        tp_percent = self.settings.default_tp_percent if tp_percent is None else tp_percent
+        sl_percent = self.settings.default_sl_percent if sl_percent is None else sl_percent
         tp = signal.tp
         sl = signal.sl
-        if tp is None and self.settings.default_tp_percent > 0:
-            tp = price * (1 + self.settings.default_tp_percent) if signal.side == "buy" \
-                else price * (1 - self.settings.default_tp_percent)
-        if sl is None and self.settings.default_sl_percent > 0:
-            sl = price * (1 - self.settings.default_sl_percent) if signal.side == "buy" \
-                else price * (1 + self.settings.default_sl_percent)
+        if tp is None and tp_percent > 0:
+            tp = price * (1 + tp_percent) if signal.side == "buy" \
+                else price * (1 - tp_percent)
+        if sl is None and sl_percent > 0:
+            sl = price * (1 - sl_percent) if signal.side == "buy" \
+                else price * (1 + sl_percent)
         return tp, sl
 
     # ----------------------------------------------------------------- helpers
@@ -225,3 +299,13 @@ def format_qty(qty: float) -> str:
 
 def format_price(price: float) -> str:
     return ("%.6f" % price).rstrip("0").rstrip(".") or "0"
+
+
+def _optional_price(raw) -> float | None:
+    """Bybit returns '' for an unset position SL/TP — coerce to None."""
+    if raw in (None, ""):
+        return None
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return None

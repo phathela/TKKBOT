@@ -4,6 +4,7 @@ from fastapi.testclient import TestClient
 from conftest import make_settings
 from app.bybit_client import BybitError
 from app.main import create_app
+from app.runtime_config import RuntimeConfig
 
 
 class MockClient:
@@ -25,14 +26,16 @@ class MockClient:
     def get_position(self, symbol):
         return self.position
 
-    def compute_tp_sl(self, signal, price):
+    def compute_tp_sl(self, signal, price, tp_percent=None, sl_percent=None):
+        tp_percent = self.settings.default_tp_percent if tp_percent is None else tp_percent
+        sl_percent = self.settings.default_sl_percent if sl_percent is None else sl_percent
         tp, sl = signal.tp, signal.sl
-        if tp is None and self.settings.default_tp_percent > 0:
-            tp = price * (1 + self.settings.default_tp_percent) if signal.side == "buy" \
-                else price * (1 - self.settings.default_tp_percent)
-        if sl is None and self.settings.default_sl_percent > 0:
-            sl = price * (1 - self.settings.default_sl_percent) if signal.side == "buy" \
-                else price * (1 + self.settings.default_sl_percent)
+        if tp is None and tp_percent > 0:
+            tp = price * (1 + tp_percent) if signal.side == "buy" \
+                else price * (1 - tp_percent)
+        if sl is None and sl_percent > 0:
+            sl = price * (1 - sl_percent) if signal.side == "buy" \
+                else price * (1 + sl_percent)
         return tp, sl
 
     def place_market_order(self, symbol, side, qty, leverage=None, tp=None, sl=None):
@@ -46,10 +49,10 @@ class MockClient:
         return {"order_id": "O999", "closed_qty": 0.5}
 
 
-def make_app(**overrides):
+def make_app(runtime=None, **overrides):
     settings = make_settings(**overrides)
     client = MockClient(settings)
-    app = create_app(settings=settings, client=client)
+    app = create_app(settings=settings, client=client, runtime=runtime)
     return TestClient(app), client
 
 
@@ -239,3 +242,59 @@ def test_bybit_error_returns_502():
     tc = TestClient(app)
     resp = tc.post("/webhook/tradingview", json=payload())
     assert resp.status_code == 502
+
+
+# ---- the dashboard (RuntimeConfig) is authoritative for bot-wide parameters ----
+
+def test_alert_leverage_ignored_dashboard_wins():
+    tc, client = make_app()
+    resp = tc.post("/webhook/tradingview", json=payload(leverage=50))
+    assert resp.status_code == 200
+    assert resp.json()["leverage"] == 5  # runtime default, not the alert's 50
+    assert client.orders[0]["leverage"] == 5
+
+
+def test_dashboard_tuned_leverage_and_sl_apply_to_next_entry():
+    settings = make_settings(max_leverage=100)
+    runtime = RuntimeConfig(settings)
+    runtime.update({"leverage": 10, "sl_percent": 0.02})
+    tc, client = make_app(runtime=runtime)
+    data = payload(side="buy")
+    data.pop("tp")
+    data.pop("sl")  # let the % defaults apply
+    data["leverage"] = 3  # alert leverage must be ignored
+    resp = tc.post("/webhook/tradingview", json=data)
+    assert resp.status_code == 200
+    order = client.orders[0]
+    assert order["leverage"] == 10
+    assert order["sl"] == pytest.approx(70000 * 0.98)  # 2% below entry
+
+
+def test_pair_added_to_runtime_allowlist_accepted():
+    settings = make_settings()  # env allowlist is BTCUSDT only
+    runtime = RuntimeConfig(settings)
+    runtime.update({"pairs_add": ["ETHUSDT"]})
+    tc, client = make_app(runtime=runtime)
+    resp = tc.post("/webhook/tradingview", json=payload(symbol="ETHUSDT"))
+    assert resp.status_code == 200
+    assert client.orders[0]["symbol"] == "ETHUSDT"
+
+
+def test_pair_removed_from_runtime_allowlist_rejected():
+    settings = make_settings()
+    runtime = RuntimeConfig(settings)
+    runtime.update({"pairs_remove": ["BTCUSDT"]})
+    tc, client = make_app(runtime=runtime)
+    resp = tc.post("/webhook/tradingview", json=payload())
+    assert resp.status_code == 400
+    assert client.orders == []
+
+
+def test_trading_toggle_off_blocks_webhook():
+    settings = make_settings()
+    runtime = RuntimeConfig(settings)
+    runtime.update({"trading_enabled": False})
+    tc, client = make_app(runtime=runtime)
+    resp = tc.post("/webhook/tradingview", json=payload())
+    assert resp.status_code == 503
+    assert client.orders == []

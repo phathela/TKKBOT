@@ -9,30 +9,37 @@ from fastapi.responses import JSONResponse
 from . import safety, signals
 from .bybit_client import BybitClient, BybitError
 from .config import Settings, get_settings
+from .dashboard import create_dashboard_router
 from .logger import setup_logging
+from .runtime_config import RuntimeConfig
 from .safety import Cooldown, SafetyError
 
 logger = logging.getLogger(__name__)
 
 
-def create_app(settings: Settings | None = None, client: BybitClient | None = None) -> FastAPI:
-    """Application factory. ``client`` is injectable so tests can mock Bybit."""
+def create_app(
+    settings: Settings | None = None,
+    client: BybitClient | None = None,
+    runtime: RuntimeConfig | None = None,
+) -> FastAPI:
+    """Application factory. ``client``/``runtime`` are injectable so tests can mock them."""
     settings = settings or get_settings()
     setup_logging(settings.log_level)
     client = client or BybitClient(settings)
     cooldown = Cooldown(settings.cooldown_seconds)
+    runtime = runtime or RuntimeConfig(settings, client=client)
 
     app = FastAPI(title="TKKBOT", version="1.0.0")
 
     @app.get("/")
     def root():
-        return {"status": "ok", "service": "TKKBOT"}
+        return {"status": "ok", "service": "TKKBOT", "dashboard": "/dashboard"}
 
     @app.get("/health")
     def health():
         return {
             "status": "ok",
-            "trading_enabled": settings.trading_enabled,
+            "trading_enabled": runtime.trading_enabled,
             "testnet": settings.bybit_testnet,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
@@ -42,15 +49,20 @@ def create_app(settings: Settings | None = None, client: BybitClient | None = No
         return {
             "status": "ok",
             "testnet": settings.bybit_testnet,
-            "trading_enabled": settings.trading_enabled,
-            "allowed_symbols": sorted(settings.allowed_symbol_set),
+            "trading_enabled": runtime.trading_enabled,
+            "allowed_symbols": sorted(runtime.allowed),
             "max_qty_per_order": settings.max_qty_per_order,
             "max_notional_usd": settings.max_notional_usd,
-            "max_leverage": settings.max_leverage,
-            "default_leverage": settings.default_leverage,
+            "max_leverage": runtime.max_leverage,
+            "leverage": runtime.leverage,
+            "sl_percent": runtime.sl_percent,
+            "tp_percent": runtime.tp_percent,
+            "margin_percent": runtime.margin_percent,
             "cooldown_seconds": settings.cooldown_seconds,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
+
+    app.include_router(create_dashboard_router(settings, client, runtime))
 
     @app.post("/webhook/tradingview")
     async def tradingview_webhook(request: Request):
@@ -58,7 +70,7 @@ def create_app(settings: Settings | None = None, client: BybitClient | None = No
         try:
             # Sync client code runs in a worker thread so the event loop stays free.
             return await run_in_threadpool(
-                _handle_webhook, raw, settings, client, cooldown
+                _handle_webhook, raw, settings, client, runtime, cooldown
             )
         except SafetyError as e:
             logger.warning("Rejected alert: %s", e.message)
@@ -76,7 +88,13 @@ def create_app(settings: Settings | None = None, client: BybitClient | None = No
     return app
 
 
-def _handle_webhook(raw: str, settings: Settings, client: BybitClient, cooldown: Cooldown):
+def _handle_webhook(
+    raw: str,
+    settings: Settings,
+    client: BybitClient,
+    runtime: RuntimeConfig,
+    cooldown: Cooldown,
+):
     """Parse, validate, guardrail and execute one TradingView alert."""
     logger.info("Webhook received: %s", raw)
 
@@ -85,9 +103,17 @@ def _handle_webhook(raw: str, settings: Settings, client: BybitClient, cooldown:
 
     safety.check_configuration(settings)
     safety.validate_secret(signal.secret, settings)
-    safety.validate_trading_enabled(settings)
-    safety.validate_symbol(signal.symbol, settings)
-    safety.validate_leverage(signal.leverage or settings.default_leverage, settings)
+    safety.validate_trading_enabled(runtime)
+    safety.validate_symbol(signal.symbol, runtime)
+
+    # The dashboard is authoritative for leverage; ignore whatever the alert says
+    # (their alerts carry "leverage": 5, which would otherwise defeat the dashboard).
+    if signal.leverage is not None and signal.leverage != runtime.leverage:
+        logger.info(
+            "Ignoring alert leverage %sx — dashboard controls leverage (%sx)",
+            signal.leverage, runtime.leverage,
+        )
+    leverage = runtime.leverage
 
     # Set the cooldown BEFORE any Bybit call: a TradingView retry (on 5xx) is
     # then swallowed here instead of double-trading.
@@ -142,19 +168,19 @@ def _handle_webhook(raw: str, settings: Settings, client: BybitClient, cooldown:
     qty = signal.qty
     if qty is None:
         balance = client.get_balance()
-        margin = balance * settings.margin_usage_percent  # e.g. 90% of wallet balance
-        leverage = signal.leverage or settings.default_leverage
-        qty = (margin * leverage) / price
+        margin = balance * runtime.margin_percent  # e.g. 90% of wallet balance
+        qty = (margin * runtime.leverage) / price
         logger.info(
             "Auto-sized qty %s for %s (margin=$%s = %.0f%% of balance $%s, %sx, price=%s)",
-            qty, signal.symbol, margin, settings.margin_usage_percent * 100,
+            qty, signal.symbol, margin, runtime.margin_percent * 100,
             balance, leverage, price,
         )
 
     safety.validate_qty(qty, price, settings)
 
-    leverage = signal.leverage or settings.default_leverage
-    tp, sl = client.compute_tp_sl(signal, price)
+    tp, sl = client.compute_tp_sl(
+        signal, price, tp_percent=runtime.tp_percent, sl_percent=runtime.sl_percent
+    )
     safety.validate_tp_sl_side(tp, sl, price, target_side)
     result = client.place_market_order(
         signal.symbol, target_side, qty, leverage=leverage, tp=tp, sl=sl

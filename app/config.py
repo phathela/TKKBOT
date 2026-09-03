@@ -23,12 +23,20 @@ class Settings(BaseSettings):
     # --- Webhook auth ---
     webhook_secret: str = ""
 
+    # --- Dashboard ---
+    # Optional. If empty, the dashboard login uses WEBHOOK_SECRET.
+    dashboard_password: str = ""
+    # Optional path to a JSON file holding dashboard-tuned settings (e.g. on a
+    # Railway volume: /data/tkkbot_config.json). Empty = settings are in-memory
+    # only and reset to env defaults on restart.
+    tkkbot_config_path: str = ""
+
     # --- Safety guardrails ---
     trading_enabled: bool = True
     allowed_symbols: str = "BTCUSDT"
     max_qty_per_order: float = 100.0
     max_notional_usd: float = 100000.0
-    max_leverage: int = 5
+    max_leverage: int = 5  # ceiling the dashboard allows for leverage (raise to go above 5x)
     margin_usage_percent: float = 0.90  # auto-size uses 90% of wallet balance as margin
 
     # --- Defaults applied when an alert omits values ---

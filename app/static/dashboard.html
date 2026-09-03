@@ -1,0 +1,412 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TKKBOT Dashboard</title>
+<style>
+  :root{
+    --bg:#0f1115; --panel:#171a21; --panel2:#1e222b; --border:#2a2f3a;
+    --text:#e7e9ee; --muted:#8b93a3; --accent:#4c8dff; --good:#2ecc71;
+    --bad:#ff5c5c; --warn:#f5b942; --buy:#2ecc71; --sell:#ff5c5c;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+       font:14px/1.45 -apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+  .wrap{max-width:920px;margin:0 auto;padding:20px}
+  h1{font-size:20px;margin:0}
+  h2{font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:0 0 12px}
+  .muted{color:var(--muted)} .mono{font-variant-numeric:tabular-nums}
+  .card{background:var(--panel);border:1px solid var(--border);border-radius:12px;
+        padding:16px 18px;margin-bottom:16px}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  @media(max-width:720px){.grid{grid-template-columns:1fr}.wrap{padding:12px}}
+
+  /* header */
+  header{display:flex;align-items:center;gap:10px;margin-bottom:18px}
+  header .logo{font-weight:700;font-size:17px}
+  .pill{font-size:11px;padding:2px 9px;border-radius:999px;border:1px solid var(--border);
+        color:var(--muted)}
+  .pill.live{color:#fff;background:var(--bad);border-color:var(--bad);font-weight:600}
+  .pill.ok{color:var(--good);border-color:var(--good)}
+  .spacer{flex:1}
+
+  /* controls */
+  label{display:block;font-size:12px;color:var(--muted);margin:0 0 4px}
+  input[type=number],input[type=text],input[type=password]{
+    width:100%;background:var(--panel2);border:1px solid var(--border);color:var(--text);
+    border-radius:8px;padding:8px 10px;font-size:14px}
+  input:focus{outline:none;border-color:var(--accent)}
+  .row{display:flex;gap:10px;margin-top:10px}
+  .field{flex:1}
+  button{background:var(--accent);border:none;color:#fff;border-radius:8px;padding:9px 14px;
+         font-size:13px;font-weight:600;cursor:pointer}
+  button:hover{filter:brightness(1.1)} button:disabled{opacity:.5;cursor:not-allowed}
+  button.ghost{background:transparent;border:1px solid var(--border);color:var(--text)}
+  button.danger{background:transparent;border:1px solid var(--bad);color:var(--bad)}
+  button.primary{width:100%;margin-top:14px}
+
+  /* master switch */
+  .switch{display:flex;align-items:center;gap:12px}
+  .switch .track{width:52px;height:28px;border-radius:999px;background:var(--border);
+                 position:relative;cursor:pointer;transition:background .15s}
+  .switch .track.on{background:var(--good)}
+  .switch .track .knob{position:absolute;top:3px;left:3px;width:22px;height:22px;
+                       border-radius:50%;background:#fff;transition:left .15s}
+  .switch .track.on .knob{left:27px}
+  .switch .label{font-size:15px;font-weight:600}
+  .switch .sub{font-size:12px;color:var(--muted)}
+
+  /* pairs */
+  .chip{display:inline-flex;align-items:center;gap:6px;background:var(--panel2);
+        border:1px solid var(--border);border-radius:999px;padding:4px 6px 4px 12px;
+        margin:0 6px 6px 0;font-size:13px}
+  .chip button{border:none;background:none;color:var(--muted);font-size:15px;cursor:pointer;
+               padding:0 4px;line-height:1}
+  .chip button:hover{color:var(--bad)}
+  .chips{margin-bottom:10px}
+  .addbar{display:flex;gap:8px}
+  .addbar input{flex:1}
+  .addbar button{flex:0 0 auto;padding:8px 12px}
+
+  /* status table */
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th{text-align:left;color:var(--muted);font-weight:500;padding:4px 8px;border-bottom:1px solid var(--border)}
+  td{padding:7px 8px;border-bottom:1px solid var(--panel2)}
+  .side-buy{color:var(--buy);font-weight:700}
+  .side-sell{color:var(--sell);font-weight:700}
+  .banner{border-radius:10px;padding:10px 12px;margin-bottom:16px;font-size:13px}
+  .banner.err{background:rgba(255,92,92,.12);border:1px solid var(--bad);color:#ffb3b3}
+  .banner.warn{background:rgba(245,185,66,.1);border:1px solid var(--warn);color:#ffd78a}
+  .hint{font-size:12px;color:var(--muted)}
+  .note{margin-top:8px;font-size:12px;color:var(--muted)}
+  .kv{display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px dashed var(--panel2)}
+  .kv:last-child{border-bottom:none}
+
+  /* login */
+  #login{max-width:360px;margin:12vh auto 0}
+  #login h1{text-align:center;margin-bottom:20px}
+  .error{color:var(--bad);font-size:13px;margin-top:8px;min-height:16px}
+
+  /* toast */
+  #toasts{position:fixed;right:16px;bottom:16px;display:flex;flex-direction:column;gap:8px;z-index:50}
+  .toast{background:#22262f;border:1px solid var(--border);border-left:3px solid var(--good);
+         border-radius:8px;padding:10px 14px;font-size:13px;box-shadow:0 6px 18px rgba(0,0,0,.4)}
+  .toast.err{border-left-color:var(--bad)}
+  .hidden{display:none!important}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div id="login" class="hidden">
+    <h1>🔐 TKKBOT</h1>
+    <div class="card">
+      <label>Password</label>
+      <input type="password" id="pwd" autocomplete="current-password" placeholder="Dashboard password">
+      <button class="primary" id="loginBtn">Sign in</button>
+      <div class="error" id="loginErr"></div>
+    </div>
+    <p class="hint" style="text-align:center">Uses your <span class="mono">DASHBOARD_PASSWORD</span>,
+       or <span class="mono">WEBHOOK_SECRET</span> if unset.</p>
+  </div>
+
+  <div id="app" class="hidden">
+    <header>
+      <span class="logo">TKKBOT</span>
+      <span class="pill" id="netPill">live</span>
+      <span class="pill" id="modePill">—</span>
+      <span class="spacer"></span>
+      <button class="ghost" id="refreshBtn">Refresh</button>
+      <button class="ghost" id="logoutBtn">Sign out</button>
+    </header>
+
+    <div id="banners"></div>
+
+    <div class="card">
+      <h2>Trading</h2>
+      <div class="switch">
+        <div class="track" id="tradingTrack" role="switch" tabindex="0"><div class="knob"></div></div>
+        <div>
+          <div class="label" id="tradingLabel">Trading off</div>
+          <div class="sub" id="tradingSub">When off, alerts are accepted &amp; logged but never traded.</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="grid">
+      <div class="card">
+        <h2>Risk — applies to the next entry</h2>
+        <div class="row">
+          <div class="field">
+            <label>Leverage (x)</label>
+            <input type="number" id="leverage" min="1" max="100" step="1">
+          </div>
+          <div class="field">
+            <label>Margin per trade (%)</label>
+            <input type="number" id="marginPct" min="5" max="100" step="1">
+          </div>
+        </div>
+        <div class="row">
+          <div class="field">
+            <label>Stop-loss distance (%)</label>
+            <input type="number" id="slPct" min="0.1" max="50" step="0.1">
+          </div>
+          <div class="field">
+            <label>Take-profit distance (%) — 0 = off</label>
+            <input type="number" id="tpPct" min="0" max="50" step="0.1">
+          </div>
+        </div>
+        <button class="primary" id="saveRiskBtn">Save risk settings</button>
+        <div class="note" id="riskNote"></div>
+      </div>
+
+      <div class="card">
+        <h2>Allowed pairs</h2>
+        <div class="chips" id="chips"></div>
+        <div class="addbar">
+          <input type="text" id="pairInput" list="pairSuggest" placeholder="e.g. ETHUSDT or 1000PEPEUSDT" autocomplete="off">
+          <datalist id="pairSuggest"></datalist>
+          <button id="addPairBtn">Add</button>
+        </div>
+        <p class="hint" style="margin-top:10px">TradingView alerts trade whatever <b>allowed</b> pair they
+           name. Remove a pair here and the bot will reject alerts for it (existing positions are not touched).</p>
+        <div class="kv" style="margin-top:8px">
+          <span class="muted">Settings file</span><span class="mono" id="persistPath">in-memory</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Live status — USDT wallet &amp; positions</h2>
+      <div class="kv">
+        <span class="muted">Wallet balance</span><span class="mono" id="wallet">—</span>
+      </div>
+      <table>
+        <thead><tr><th>Pair</th><th>Side</th><th>Size (BTC)</th><th>Avg price</th>
+                <th>SL</th><th>TP</th><th>uPnL</th><th></th></tr></thead>
+        <tbody id="posRows"></tbody>
+      </table>
+      <p class="hint" id="liveHint"></p>
+    </div>
+  </div>
+</div>
+
+<div id="toasts"></div>
+
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+const state = {};
+
+/* ---------- api helpers ---------- */
+async function api(url, opts = {}) {
+  const res = await fetch(url, {
+    headers: { "Content-Type": "application/json" },
+    ...opts,
+  });
+  if (res.status === 401) { showLogin(); throw new Error("auth"); }
+  let body = null;
+  try { body = await res.json(); } catch (e) { /* empty */ }
+  if (!res.ok) {
+    const msg = (body && (body.detail || body.error)) || ("HTTP " + res.status);
+    throw new Error(msg);
+  }
+  return body;
+}
+function toast(msg, isErr = false) {
+  const el = document.createElement("div");
+  el.className = "toast" + (isErr ? " err" : "");
+  el.textContent = msg;
+  $("toasts").appendChild(el);
+  setTimeout(() => el.remove(), 4000);
+}
+
+/* ---------- views ---------- */
+function showLogin() {
+  $("login").classList.remove("hidden");
+  $("app").classList.add("hidden");
+}
+function showApp() {
+  $("login").classList.add("hidden");
+  $("app").classList.remove("hidden");
+  refresh();
+}
+
+/* ---------- state rendering ---------- */
+function esc(s) {
+  return String(s).replace(/[&<>"']/g, c => ({
+    "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"
+  }[c]));
+}
+function fmtUSD(n) {
+  if (n === null || n === undefined) return "—";
+  return "$" + Number(n).toLocaleString("en-US", {maximumFractionDigits: 2});
+}
+function applyState(s) {
+  state.data = s;
+
+  // badges
+  const net = $("netPill");
+  net.textContent = s.testnet ? "testnet" : "live";
+  net.className = "pill" + (s.testnet ? "" : " live");
+
+  const mode = $("modePill");
+  mode.textContent = s.trading_enabled ? "TRADING ON" : "TRADING OFF";
+  mode.className = "pill" + (s.trading_enabled ? (s.testnet ? " ok" : " live") : "");
+
+  renderTrading(s.trading_enabled);
+  setRiskInputs(s);
+
+  // pairs
+  $("chips").innerHTML = s.allowed_symbols.map(sym =>
+    `<span class="chip">${esc(sym)}<button data-remove="${esc(sym)}" title="Remove">×</button></span>`
+  ).join("") || '<span class="muted">No pairs allowed — add one below.</span>';
+  document.querySelectorAll("[data-remove]").forEach(b =>
+    b.onclick = () => changePairs([], [b.dataset.remove]));
+
+  $("persistPath").textContent = s.persistence_path || "in-memory (resets on redeploy)";
+
+  // risk note
+  const sl = s.sl_percent, lev = s.leverage;
+  $("riskNote").textContent = s.tp_percent > 0
+    ? `${(sl*100).toFixed(1)}% price move × ${lev}x = ~${(sl*lev*100).toFixed(0)}% of margin lost on a stop; ` +
+      `${(s.tp_percent*100).toFixed(1)}% move ≈ +${(s.tp_percent*lev*100).toFixed(0)}% of margin on target.`
+    : `${(sl*100).toFixed(1)}% price move × ${lev}x = ~${(sl*lev*100).toFixed(0)}% of margin lost on a stop. ` +
+      `No take-profit attached (off).`;
+
+  renderLive(s);
+}
+function renderTrading(on) {
+  $("tradingTrack").classList.toggle("on", on);
+  $("tradingLabel").textContent = on ? "Trading on" : "Trading off";
+  $("tradingSub").textContent = on
+    ? "Alerts open / flip positions normally."
+    : "When off, alerts are accepted and logged but never traded.";
+}
+function setRiskInputs(s) {
+  $("leverage").value = s.leverage;
+  $("leverage").max = s.max_leverage;
+  $("marginPct").value = Math.round(s.margin_percent * 100);
+  $("slPct").value = +(s.sl_percent * 100).toFixed(1);
+  $("tpPct").value = +(s.tp_percent * 100).toFixed(1);
+}
+function renderLive(s) {
+  // banners
+  const banners = [];
+  if (s.live_status !== "ok")
+    banners.push(`<div class="banner err">Live data unavailable: ${esc(s.live_error || "Bybit unreachable")} — settings above still apply.</div>`);
+  if (!s.persistence_path)
+    banners.push(`<div class="banner warn">Settings are stored in memory only — they reset to defaults on restart/redeploy. Add a Railway volume and set TKKBOT_CONFIG_PATH to persist.</div>`);
+  $("banners").innerHTML = banners.join("");
+
+  $("wallet").textContent = fmtUSD(s.wallet_balance);
+
+  const open = new Map(s.positions.map(p => [p.symbol, p]));
+  const rows = s.allowed_symbols.map(sym => {
+    const p = open.get(sym);
+    if (!p) return `<tr><td><b>${esc(sym)}</b></td><td class="muted" colspan="6">flat</td><td></td></tr>`;
+    const sideCls = p.side === "Buy" ? "side-buy" : "side-sell";
+    const sideTxt = p.side === "Buy" ? "LONG" : "SHORT";
+    return `<tr>
+      <td><b>${esc(p.symbol)}</b></td>
+      <td class="${sideCls}">${sideTxt}</td>
+      <td class="mono">${p.size}</td>
+      <td class="mono">${fmtPrice(p.avg_price)}</td>
+      <td class="mono">${p.sl ? fmtPrice(p.sl) : "—"}</td>
+      <td class="mono">${p.tp ? fmtPrice(p.tp) : "—"}</td>
+      <td class="mono">${fmtSigned(p.unrealised_pnl)}</td>
+      <td><button class="danger" data-close="${esc(p.symbol)}">Close</button></td>
+    </tr>`;
+  }).join("");
+  $("posRows").innerHTML = rows;
+  document.querySelectorAll("[data-close]").forEach(b =>
+    b.onclick = async () => {
+      if (!confirm(`Close the open ${b.dataset.close} position now?`)) return;
+      try { await api("/api/dashboard/close", { method:"POST", body: JSON.stringify({symbol:b.dataset.close}) }); toast("Close order sent"); refresh(); }
+      catch (e) { toast(e.message, true); refresh(); }
+    });
+  $("liveHint").textContent = s.live_status === "ok"
+    ? "Stop-loss shown is the live one on the exchange. Changing SL % above only affects the next entry."
+    : "";
+}
+function fmtPrice(v) {
+  return v ? Number(v).toLocaleString("en-US", {maximumFractionDigits: 2}) : "—";
+}
+function fmtSigned(v) {
+  if (v === null || v === undefined) return "—";
+  const n = Number(v);
+  return (n > 0 ? "+" : "") + fmtUSD(n);
+}
+
+/* ---------- actions ---------- */
+async function refresh() {
+  try {
+    const s = await api("/api/dashboard/state");
+    applyState(s);
+  } catch (e) {
+    if (e.message !== "auth") showLogin();
+  }
+}
+async function postConfig(patch, okMsg) {
+  try {
+    const s = await api("/api/dashboard/config", { method: "POST", body: JSON.stringify(patch) });
+    applyState({ ...s, testnet: state.data.testnet, live_status: state.data.live_status,
+                 live_error: state.data.live_error, wallet_balance: state.data.wallet_balance,
+                 positions: state.data.positions });
+    toast(okMsg);
+  } catch (e) { if (e.message !== "auth") { toast(e.message, true); refresh(); } }
+}
+async function changePairs(add, remove) {
+  await postConfig({ pairs_add: add, pairs_remove: remove },
+    add.length ? `Added ${add.join(", ")}` : `Removed ${remove.join(", ")}`);
+}
+
+$("loginBtn").onclick = async () => {
+  $("loginErr").textContent = "";
+  try {
+    await api("/dashboard/login", { method: "POST", body: JSON.stringify({ password: $("pwd").value }) });
+    $("pwd").value = "";
+    showApp();
+  } catch (e) {
+    $("loginErr").textContent = e.message === "auth" ? "Wrong password" : e.message;
+  }
+};
+$("pwd").addEventListener("keydown", e => { if (e.key === "Enter") $("loginBtn").click(); });
+$("logoutBtn").onclick = async () => { try { await api("/dashboard/logout", {method:"POST", body:"{}"}); } catch(e){} location.reload(); };
+$("refreshBtn").onclick = () => refresh();
+
+$("tradingTrack").onclick = async () => {
+  const next = !state.data.trading_enabled;
+  await postConfig({ trading_enabled: next }, next ? "Trading ON" : "Trading OFF");
+};
+
+$("saveRiskBtn").onclick = async () => {
+  const lev = +$("leverage").value, mp = +$("marginPct").value,
+        sl = +$("slPct").value, tp = +$("tpPct").value;
+  const patch = {
+    leverage: lev, margin_percent: mp / 100, sl_percent: sl / 100, tp_percent: tp / 100,
+  };
+  await postConfig(patch, "Risk settings saved — next entry uses them");
+};
+
+$("addPairBtn").onclick = addPair;
+$("pairInput").addEventListener("keydown", e => { if (e.key === "Enter") addPair(); });
+async function addPair() {
+  const raw = $("pairInput").value.trim().toUpperCase().replace(/\.P$/, "");
+  if (!raw) return;
+  $("pairInput").value = "";
+  await changePairs([raw], []);
+}
+$("pairInput").addEventListener("input", async () => {
+  const q = $("pairInput").value.trim();
+  if (!q) return;
+  try {
+    const r = await api("/api/dashboard/pairs?q=" + encodeURIComponent(q) + "&limit=10");
+    $("pairSuggest").innerHTML = r.pairs.map(s => `<option value="${esc(s)}">`).join("");
+  } catch (e) { /* ignore suggestion errors */ }
+});
+
+refresh();
+</script>
+</body>
+</html>

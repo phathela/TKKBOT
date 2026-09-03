@@ -17,6 +17,7 @@ class FakeSession:
         self.last_price = "70000"
         self.wallet_balance = "1000"
         self.positions = []
+        self.tickers = [{"symbol": "BTCUSDT", "lastPrice": self.last_price}]
 
     def _ok(self, result):
         return {"retCode": self.retcode, "retMsg": self.retmsg, "result": result}
@@ -35,7 +36,7 @@ class FakeSession:
 
     def get_tickers(self, **kwargs):
         self.calls.append(("get_tickers", kwargs))
-        return self._ok({"list": [{"lastPrice": self.last_price}]})
+        return self._ok({"list": self.tickers})
 
     def get_wallet_balance(self, **kwargs):
         self.calls.append(("get_wallet_balance", kwargs))
@@ -189,6 +190,40 @@ def test_compute_tp_sl_explicit_values_win():
     signal = TradeSignal(secret="s", symbol="BTCUSDT", side="buy", qty=0.001, tp=72000, sl=66000)
     tp, sl = client.compute_tp_sl(signal, 70000.0)
     assert tp == 72000 and sl == 66000
+
+
+def test_compute_tp_sl_percent_overrides_env_defaults():
+    """The dashboard passes tp/sl percents that beat the env defaults."""
+    client = make_client(default_tp_percent=0.05, default_sl_percent=0.05)
+    signal = TradeSignal(secret="s", symbol="BTCUSDT", side="buy", qty=0.001)
+    tp, sl = client.compute_tp_sl(signal, 70000.0, tp_percent=0.03, sl_percent=0.02)
+    assert tp == pytest.approx(72100.0)  # +3%
+    assert sl == pytest.approx(68600.0)  # -2%
+    # ...but an explicit alert price still wins over the percent override.
+    signal2 = TradeSignal(secret="s", symbol="BTCUSDT", side="buy", qty=0.001,
+                          tp=72000, sl=66000)
+    assert client.compute_tp_sl(
+        signal2, 70000.0, tp_percent=0.03, sl_percent=0.02
+    ) == (72000, 66000)
+
+
+def test_list_pairs_filters_sorts_and_caches():
+    client = make_client()
+    client.session.tickers = [
+        {"symbol": "SOLUSDT", "lastPrice": "150"},
+        {"symbol": "BTCUSDT", "lastPrice": "70000"},
+        {"symbol": "ETHUSDT", "lastPrice": "3000"},
+        {"symbol": "BTCUSD", "lastPrice": "90000"},  # not a USDT perp — excluded
+    ]
+    assert client.list_pairs(query="", limit=10) == ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+    assert client.list_pairs(query="eth", limit=10) == ["ETHUSDT"]
+    session_calls = sum(1 for n, _ in client.session.calls if n == "get_tickers")
+    assert session_calls == 1  # second query served from the cache
+
+
+def test_pair_exists_true_for_known_instrument():
+    client = make_client()
+    assert client.pair_exists("BTCUSDT") is True
 
 
 def test_compute_tp_sl_from_percent():

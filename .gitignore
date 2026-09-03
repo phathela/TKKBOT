@@ -11,6 +11,9 @@ venv/
 .env.*
 !.env.example
 
+# Local settings persistence fallback (prod uses a Railway volume at /data)
+data/
+
 # IDE / OS
 .idea/
 .vscode/

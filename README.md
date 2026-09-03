@@ -30,10 +30,31 @@ opened on the alert's side. A `side: "close"` closes whatever is open and goes f
 that matches the current direction is a hold (never doubles up). TP/SL are attached
 **on the exchange** (not tracked in the bot), so they survive restarts and disconnects.
 
-> **Default strategy baked into the config:** BTCUSDT at **5x leverage**, auto-sizing that puts
-> **90% of your wallet balance** into each trade as margin, and a **stop-loss 4% from entry**
-> (4% price move × 5x = 20% of the margin used). Omit `qty`, `leverage` and `sl` in your alerts
-> and the bot applies these automatically; send explicit values to override (subject to the caps).
+> **The dashboard is the source of truth for sizing:** leverage, margin %, stop-loss %,
+> take-profit % and the allowed pair list are set in the web dashboard (`/dashboard`) and are
+> persisted, so an alert's own `leverage` field is **ignored** (it used to win; now it would
+> silently defeat the dashboard). An alert may still override `qty` and send explicit
+> `tp`/`sl` **prices**, which are honoured per-trade. Defaults on first boot come from the env
+> vars below (BTCUSDT, 5x, 90% margin, 4% SL).
+
+## Dashboard (web control panel)
+
+Open `https://<project>.up.railway.app/dashboard` and sign in with `DASHBOARD_PASSWORD`
+(or `WEBHOOK_SECRET` if that is unset). From there you can, live, without redeploying:
+
+- **Trading on/off** kill switch (same effect as `TRADING_ENABLED`).
+- **Leverage** — any value from 1 up to `MAX_LEVERAGE` (raise that env var to go above 5x).
+- **Margin %** — fraction of wallet balance used per trade (auto-sizing).
+- **Stop-loss distance %** and an optional **take-profit distance %** (0 = no TP).
+- **Allowed pairs** — search the real Bybit perpetual list (e.g. `ETHUSDT`, `1000PEPEUSDT`)
+  and add/remove them. Alerts trade whichever allowed pair they name.
+- **Live status** — USDT wallet balance and every open position per allowed pair, with its
+  live exchange SL/TP, plus a per-pair **Close** button (reduce-only).
+
+Changes are saved to a JSON file (see `TKKBOT_CONFIG_PATH`) and take effect on the **next
+entry**. They do not move the stop-loss of a position that is already open — send the opposite
+signal (which flips: closes and re-opens) to apply new values immediately. Existing positions
+are never touched when you remove a pair from the list.
 
 | Field | Required | Notes |
 |---|---|---|
@@ -52,12 +73,15 @@ Aliases accepted: `action`/`direction` for side, `quantity`/`contracts` for qty,
 
 ```
 app/
-  main.py          FastAPI app, /webhook/tradingview endpoint, /health, /status
-  config.py        All settings from env vars (pydantic-settings)
-  signals.py       Parse & normalize TradingView payloads
-  safety.py        Guardrails + duplicate-alert cooldown
-  bybit_client.py  Bybit V5 REST wrapper (pybit)
-tests/             pytest suite (65 tests)
+  main.py             FastAPI app, /webhook/tradingview endpoint, /health, /status
+  config.py           All env-var settings (pydantic-settings)
+  signals.py          Parse & normalize TradingView payloads
+  safety.py           Guardrails + duplicate-alert cooldown
+  bybit_client.py     Bybit V5 REST wrapper (pybit)
+  runtime_config.py   Dashboard-tunable settings, persisted to a file (Railway volume)
+  dashboard.py        /dashboard page + /api/dashboard/* (login, state, config, pairs, close)
+  static/dashboard.html  Self-contained dashboard front-end (no build step)
+tests/                pytest suite (116 tests)
 Procfile           web: uvicorn app.main:app --port $PORT
 runtime.txt        Python 3.12
 railway.json       Railway deploy config (healthcheck on /health)
@@ -140,14 +164,16 @@ Create an alert on a chart (or a strategy's order event). In the alert settings:
 | `BYBIT_API_KEY` / `BYBIT_API_SECRET` | — | Bybit V3 key (Contract Trading, no withdrawal, no IP whitelist) |
 | `BYBIT_TESTNET` | `false` | `true` = testnet keys + testnet API |
 | `WEBHOOK_SECRET` | — | Required; must match `"secret"` in every alert |
-| `TRADING_ENABLED` | `true` | Kill switch: `false` = accept + log, never trade |
-| `ALLOWED_SYMBOLS` | `BTCUSDT` | Comma-separated allowlist |
+| `DASHBOARD_PASSWORD` | *(none)* | Password for `/dashboard`. Empty → `WEBHOOK_SECRET` is used |
+| `TKKBOT_CONFIG_PATH` | *(none)* | Where dashboard settings are saved (e.g. `/data/tkkbot_config.json` on a Railway volume). Empty → in-memory only (reset on restart) |
+| `TRADING_ENABLED` | `true` | Seed for the dashboard on/off switch (also the env kill switch on first boot) |
+| `ALLOWED_SYMBOLS` | `BTCUSDT` | Seed pair list; the dashboard can add more from the Bybit perpetual list |
 | `MAX_QTY_PER_ORDER` | `100.0` | Hard cap: reject larger quantities |
 | `MAX_NOTIONAL_USD` | `100000` | Hard cap: reject orders above this notional (qty × live price) |
-| `MAX_LEVERAGE` | `5` | Reject alerts requesting more (your strategy is 5x) |
-| `MARGIN_USAGE_PERCENT` | `0.90` | Auto-size uses 90% of wallet balance as margin per trade |
-| `DEFAULT_LEVERAGE` | `5` | Used when an alert omits `leverage` |
-| `DEFAULT_TP_PERCENT` / `DEFAULT_SL_PERCENT` | `0` / `0.04` | Fallback TP/SL decimals; `0.04` = 4% price move = 20% of margin at 5x |
+| `MAX_LEVERAGE` | `5` | Ceiling the dashboard allows for leverage (raise to `100` to go above 5x) |
+| `MARGIN_USAGE_PERCENT` | `0.90` | Seed for dashboard margin % (auto-size uses this fraction of wallet per trade) |
+| `DEFAULT_LEVERAGE` | `5` | Seed for dashboard leverage on first boot |
+| `DEFAULT_TP_PERCENT` / `DEFAULT_SL_PERCENT` | `0` / `0.04` | Seeds for dashboard TP/SL distances; `0.04` = 4% price move = 20% of margin at 5x |
 | `COOLDOWN_SECONDS` | `5` | Duplicate-alert suppression window |
 | `LOG_LEVEL` | `INFO` | `DEBUG` for more detail |
 | `PORT` | `8000` | Railway injects this automatically |
@@ -170,7 +196,7 @@ curl -X POST http://localhost:8000/webhook/tradingview ^
   -d "{\"secret\":\"YOUR_SECRET\",\"symbol\":\"BTCUSDT\",\"side\":\"buy\",\"qty\":0.001,\"leverage\":5}"
 ```
 
-Run tests: `pytest -q` (65 tests, no real API calls).
+Run tests: `pytest -q` (116 tests, no real API calls).
 
 ## 6. Going live — checklist
 
