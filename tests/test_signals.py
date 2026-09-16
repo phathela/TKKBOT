@@ -1,7 +1,7 @@
 import pytest
 
 from conftest import make_settings
-from app.signals import SignalError, build_signal, parse_payload
+from app.signals import SignalError, build_signal, parse_payload, redact_secret
 
 
 def test_parse_direct_json():
@@ -122,3 +122,44 @@ def test_bad_qty_raises():
 def test_negative_qty_raises():
     with pytest.raises(SignalError):
         build_signal({"secret": "s", "symbol": "BTCUSDT", "side": "buy", "qty": -1}, make_settings())
+
+
+# ------------------------------------------------------------- secret redaction
+
+
+def test_redact_masks_the_configured_secret():
+    raw = '{"secret":"super-key","symbol":"BTCUSDT","side":"buy"}'
+    out = redact_secret(raw, "super-key")
+    assert "super-key" not in out
+    assert '"secret":"***"' in out
+    assert '"symbol":"BTCUSDT"' in out  # the rest of the payload survives
+
+
+def test_redact_masks_a_foreign_secret_field():
+    """A payload carrying some *other* secret is masked by the field regex."""
+    raw = '{"secret":"someone-elses-key","symbol":"BTCUSDT"}'
+    out = redact_secret(raw, "our-key")
+    assert "someone-elses-key" not in out
+    assert '"secret":"***"' in out
+
+
+def test_redact_masks_passphrase_alias_and_spacing():
+    out = redact_secret('{"passphrase" : "abc123"}', "our-key")
+    assert "abc123" not in out
+
+
+def test_redact_handles_non_json_bodies():
+    """The literal pass works whatever the format — form-encoded included."""
+    out = redact_secret("secret=abc123&symbol=BTCUSDT", "abc123")
+    assert "abc123" not in out
+
+
+def test_redact_leaves_clean_and_empty_payloads_alone():
+    assert redact_secret('{"symbol":"BTCUSDT"}', "k") == '{"symbol":"BTCUSDT"}'
+    assert redact_secret("", "k") == ""
+    assert redact_secret(None, "k") is None
+
+
+def test_redact_without_configured_secret_still_masks_fields():
+    out = redact_secret('{"secret":"leaky"}', None)
+    assert "leaky" not in out

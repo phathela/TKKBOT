@@ -1,8 +1,37 @@
 """Parse TradingView webhook payloads into a normalized TradeSignal."""
 import json
+import re
 from dataclasses import dataclass
 
 from .config import Settings
+
+# What a masked secret looks like in logs.
+MASK = "***"
+
+# Matches a secret-carrying field in any JSON-ish body ("secret": "...", or the
+# "passphrase" alias). Applied on top of the literal replacement below so that a
+# payload carrying some *other* secret is masked too.
+_SECRET_FIELD_RE = re.compile(
+    r'("(?:secret|passphrase)"\s*:\s*")([^"]*)(")', re.IGNORECASE
+)
+
+
+def redact_secret(raw: str, secret: str | None = None) -> str:
+    """Mask secrets in raw alert text so nothing sensitive reaches the logs.
+
+    Two passes, because either alone has a hole:
+    - the configured secret is replaced literally, which works whatever the body
+      format is (JSON, form-encoded, anything);
+    - any ``"secret": "..."``-style field is masked, which covers a body that
+      carries a secret we don't know (a typo'd or foreign one).
+
+    Never let this change what the bot *acts* on — it is for logging only.
+    """
+    if not raw:
+        return raw
+    if secret:
+        raw = raw.replace(secret, MASK)
+    return _SECRET_FIELD_RE.sub(lambda m: m.group(1) + MASK + m.group(3), raw)
 
 
 class SignalError(Exception):

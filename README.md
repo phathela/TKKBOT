@@ -84,7 +84,7 @@ app/
   runtime_config.py   Dashboard-tunable settings, persisted to a file (Railway volume)
   dashboard.py        /dashboard page + /api/dashboard/* (login, state, config, pairs, close)
   static/dashboard.html  Self-contained dashboard front-end (no build step)
-tests/                pytest suite (116 tests)
+tests/                pytest suite (132 tests)
 Procfile           web: uvicorn app.main:app --port $PORT
 runtime.txt        Python 3.12
 railway.json       Railway deploy config (healthcheck on /health)
@@ -199,7 +199,7 @@ curl -X POST http://localhost:8000/webhook/tradingview ^
   -d "{\"secret\":\"YOUR_SECRET\",\"symbol\":\"BTCUSDT\",\"side\":\"buy\",\"qty\":0.001,\"leverage\":5}"
 ```
 
-Run tests: `pytest -q` (116 tests, no real API calls).
+Run tests: `pytest -q` (132 tests, no real API calls).
 
 ## 6. Going live — checklist
 
@@ -212,6 +212,7 @@ Run tests: `pytest -q` (116 tests, no real API calls).
 ## Safety notes
 
 - **One-way position mode** is assumed (`positionIdx: 0`). If your Bybit account is in hedge mode, disable hedge mode in Bybit → Trading Account.
+- Alert bodies are **never logged verbatim**: the `secret` field is masked to `***` before anything reaches the log (see `signals.redact_secret`), because the webhook secret is the credential that authorises live trades. Rotate `WEBHOOK_SECRET` and update your TradingView alerts if it has ever been pasted somewhere shared.
 - Qty is rounded down to the symbol's lot step before ordering (e.g. `0.00714` → `0.007` for BTCUSDT).
 - The bot never withdraws, never transfers, and only ever places market orders on allowed symbols.
 - `close` is `reduceOnly` — it can only reduce, never flip, a position.

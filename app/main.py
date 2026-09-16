@@ -79,7 +79,7 @@ def create_app(
             logger.error("Bybit error: %s", e)
             return JSONResponse({"error": str(e)}, status_code=502)
         except signals.SignalError as e:
-            logger.warning("Bad payload: %s", e.message)
+            logger.warning("Bad payload: %s", signals.redact_secret(e.message, settings.webhook_secret))
             return JSONResponse({"error": e.message}, status_code=400)
         except Exception:  # noqa: BLE001
             logger.exception("Unexpected error handling webhook")
@@ -96,7 +96,9 @@ def _handle_webhook(
     cooldown: Cooldown,
 ):
     """Parse, validate, guardrail and execute one TradingView alert."""
-    logger.info("Webhook received: %s", raw)
+    # Never log the payload verbatim: it carries the webhook secret, which is the
+    # key that authorises live trades.
+    logger.info("Webhook received: %s", signals.redact_secret(raw, settings.webhook_secret))
 
     data = signals.parse_payload(raw)
     signal = signals.build_signal(data, settings)

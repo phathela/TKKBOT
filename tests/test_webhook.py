@@ -91,6 +91,34 @@ def test_valid_buy_places_entry_order():
     ]
 
 
+def test_logs_never_contain_the_webhook_secret(capsys):
+    """The alert body carries the secret; it must be masked in the logs.
+
+    Railway stores this stdout verbatim and anyone with project access can read
+    it, so a plaintext secret there is a live-trading credential leak. Asserted
+    on the emitted output (capsys) because ``setup_logging`` rebuilds the root
+    handlers with ``force=True``, which replaces the one caplog installs.
+    """
+    tc, _ = make_app()
+    resp = tc.post("/webhook/tradingview", json=payload())
+    assert resp.status_code == 200
+    out = capsys.readouterr().out
+    assert "test-secret" not in out
+    assert "Webhook received" in out          # still logged, just masked
+    assert '"secret":"***"' in out
+
+
+def test_logs_mask_the_secret_even_on_a_rejected_payload(capsys):
+    """A malformed alert is still logged — with its secret masked."""
+    tc, _ = make_app()
+    resp = tc.post("/webhook/tradingview",
+                   content='{"secret":"test-secret","symbol":"BTCUSDT","side":"sideways"}')
+    assert resp.status_code == 400
+    out = capsys.readouterr().out
+    assert "test-secret" not in out
+    assert "Bad payload" in out
+
+
 def test_bad_secret_rejected_no_trade():
     tc, client = make_app()
     resp = tc.post("/webhook/tradingview", json=payload(secret="wrong"))
