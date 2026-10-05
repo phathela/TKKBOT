@@ -228,10 +228,12 @@ function showLogin() {
   $("login").classList.remove("hidden");
   $("app").classList.add("hidden");
 }
-function showApp() {
+// ``reload`` is false when the caller has just fetched the state itself (boot),
+// so a page load does not fetch the panel twice.
+function showApp(reload = true) {
   $("login").classList.add("hidden");
   $("app").classList.remove("hidden");
-  refresh();
+  if (reload) refresh();
   startLiveRefresh();
 }
 
@@ -353,29 +355,16 @@ function pnlCls(v) {
 }
 
 /* ---------- actions ---------- */
-async function refresh() {
-  try {
-    const s = await api("/api/dashboard/state");
-    applyState(s);
-    setLiveNotice("");
-  } catch (e) {
-    // api() has already shown the login form for a 401. Anything else is
-    // transient — a network blip, a 502 from the edge, a slow read — so keep
-    // the dashboard up on its last known values and say so. Treating every
-    // failure as "signed out" threw the user back to the password prompt and
-    // killed the auto-refresh timer with it.
-    if (e.message !== "auth") setLiveNotice(`Could not refresh: ${describeErr(e)}`, true);
-  }
-}
-// Auto-refresh only the live block (wallet, banners, position rows, hint) every
-// ~10 s so prices/PnL stay current. It never calls setRiskInputs / applyState's
-// risk fields, so a config the user is mid-editing is not clobbered.
+// Auto-refresh keeps the live block (wallet, banners, position rows, hint)
+// current, every ~10 s, without touching the risk fields — so a setting the user
+// is mid-edit is never clobbered.
 const LIVE_INTERVAL_MS = 10000;
 // A poll makes three sequential Bybit reads (balance, positions, stop-orders),
 // each capped at 10 s by the client, so a poll can outlast the interval. Cap it
-// here as well: without a deadline a request that never settles leaves the
-// in-flight flag stuck true and the panel frozen for good — no further requests,
-// nothing in the logs, nothing on screen to say why.
+// here as well. Every state read goes through this deadline, the boot load
+// included: without one, a request that never settles leaves its caller awaiting
+// forever — and on boot that means a blank page, which is the very symptom this
+// is here to prevent.
 const LIVE_TIMEOUT_MS = 15000;
 
 let liveTimer = null, liveFetching = false, liveFailures = 0;
@@ -391,7 +380,7 @@ function setLiveNotice(msg, isErr = false) {
   el.textContent = msg;
   el.style.color = isErr ? "var(--warn)" : "";
 }
-async function fetchLiveState() {
+async function fetchState() {
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), LIVE_TIMEOUT_MS);
   try {
@@ -400,11 +389,28 @@ async function fetchLiveState() {
     clearTimeout(timer);   // so the deadline can never outlive the request
   }
 }
+async function refresh() {
+  try {
+    const s = await fetchState();
+    applyState(s);
+    setLiveNotice("");
+    return true;
+  } catch (e) {
+    // api() has already shown the login form for a 401. Anything else is
+    // transient — a network blip, a 502 from the edge, a slow read — so keep
+    // the dashboard up on its last known values and say so. Treating every
+    // failure as "signed out" threw the user back to the password prompt and
+    // killed the auto-refresh timer with it.
+    if (e.message === "auth") return "auth";
+    setLiveNotice(`Could not refresh: ${describeErr(e)}`, true);
+    return false;
+  }
+}
 async function refreshLive() {
   if (liveFetching) return;          // skip a tick if the last fetch is still out
   liveFetching = true;
   try {
-    const s = await fetchLiveState();
+    const s = await fetchState();
     liveFailures = 0;
     state.data = s;
     renderLive(s);
@@ -488,7 +494,18 @@ $("pairInput").addEventListener("input", async () => {
   } catch (e) { /* ignore suggestion errors */ }
 });
 
-refresh();
+// Boot. This used to be a bare refresh(), and showApp() was reachable only from
+// the login button — so opening or reloading the page with a session cookie
+// already in hand fetched the state, rendered nothing, and left a blank screen
+// (both #login and #app ship hidden and nothing ever revealed one).
+async function boot() {
+  const r = await refresh();
+  if (r === "auth") return;   // api() has already revealed the login form
+  // Reveal the panel even when that first read failed: an empty page is
+  // indistinguishable from a broken bot, whereas the notice explains itself.
+  showApp(false);
+}
+boot();
 </script>
 </body>
 </html>
