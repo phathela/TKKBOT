@@ -330,9 +330,9 @@ function renderLive(s) {
       try { await api("/api/dashboard/close", { method:"POST", body: JSON.stringify({symbol:b.dataset.close}) }); toast("Close order sent"); refresh(); }
       catch (e) { toast(e.message, true); refresh(); }
     });
-  $("liveHint").textContent = s.live_status === "ok"
+  setLiveNotice(s.live_status === "ok"
     ? "Stop-loss shown is the live one on the exchange. Changing SL % above only affects the next entry."
-    : "";
+    : "");
 }
 function fmtPrice(v) {
   return v ? Number(v).toLocaleString("en-US", {maximumFractionDigits: 2}) : "—";
@@ -357,30 +357,74 @@ async function refresh() {
   try {
     const s = await api("/api/dashboard/state");
     applyState(s);
+    setLiveNotice("");
   } catch (e) {
-    if (e.message !== "auth") showLogin();
+    // api() has already shown the login form for a 401. Anything else is
+    // transient — a network blip, a 502 from the edge, a slow read — so keep
+    // the dashboard up on its last known values and say so. Treating every
+    // failure as "signed out" threw the user back to the password prompt and
+    // killed the auto-refresh timer with it.
+    if (e.message !== "auth") setLiveNotice(`Could not refresh: ${describeErr(e)}`, true);
   }
 }
 // Auto-refresh only the live block (wallet, banners, position rows, hint) every
 // ~10 s so prices/PnL stay current. It never calls setRiskInputs / applyState's
 // risk fields, so a config the user is mid-editing is not clobbered.
-let liveTimer = null, liveFetching = false;
+const LIVE_INTERVAL_MS = 10000;
+// A poll makes three sequential Bybit reads (balance, positions, stop-orders),
+// each capped at 10 s by the client, so a poll can outlast the interval. Cap it
+// here as well: without a deadline a request that never settles leaves the
+// in-flight flag stuck true and the panel frozen for good — no further requests,
+// nothing in the logs, nothing on screen to say why.
+const LIVE_TIMEOUT_MS = 15000;
+
+let liveTimer = null, liveFetching = false, liveFailures = 0;
+
+function describeErr(e) {
+  return (e && e.name === "AbortError")
+    ? `no response within ${LIVE_TIMEOUT_MS / 1000}s`
+    : (e && e.message) || "unknown error";
+}
+function setLiveNotice(msg, isErr = false) {
+  const el = $("liveHint");
+  if (!el) return;
+  el.textContent = msg;
+  el.style.color = isErr ? "var(--warn)" : "";
+}
+async function fetchLiveState() {
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), LIVE_TIMEOUT_MS);
+  try {
+    return await api("/api/dashboard/state", { signal: ctl.signal });
+  } finally {
+    clearTimeout(timer);   // so the deadline can never outlive the request
+  }
+}
 async function refreshLive() {
   if (liveFetching) return;          // skip a tick if the last fetch is still out
   liveFetching = true;
   try {
-    const s = await api("/api/dashboard/state");
+    const s = await fetchLiveState();
+    liveFailures = 0;
     state.data = s;
     renderLive(s);
   } catch (e) {
-    if (e.message === "auth") { stopLiveRefresh(); showLogin(); }
+    if (e.message === "auth") { stopLiveRefresh(); showLogin(); return; }
+    // Never fail silently: a panel that quietly stops updating looks identical
+    // to a market that has stopped moving.
+    liveFailures++;
+    setLiveNotice(
+      `Not updating — ${liveFailures} failed refresh${liveFailures === 1 ? "" : "es"} `
+      + `(${describeErr(e)}). Retrying every ${LIVE_INTERVAL_MS / 1000}s.`,
+      true,
+    );
   } finally {
-    liveFetching = false;
+    liveFetching = false;   // always runs: the request is bounded by the deadline
   }
 }
 function startLiveRefresh() {
   if (liveTimer) return;
-  liveTimer = setInterval(refreshLive, 10000);
+  liveTimer = setInterval(refreshLive, LIVE_INTERVAL_MS);
 }
 function stopLiveRefresh() {
   if (liveTimer) { clearInterval(liveTimer); liveTimer = null; }
