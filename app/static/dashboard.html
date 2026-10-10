@@ -58,16 +58,33 @@
   .switch .sub{font-size:12px;color:var(--muted)}
 
   /* pairs */
-  .chip{display:inline-flex;align-items:center;gap:6px;background:var(--panel2);
-        border:1px solid var(--border);border-radius:999px;padding:4px 6px 4px 12px;
-        margin:0 6px 6px 0;font-size:13px}
-  .chip button{border:none;background:none;color:var(--muted);font-size:15px;cursor:pointer;
-               padding:0 4px;line-height:1}
-  .chip button:hover{color:var(--bad)}
-  .chips{margin-bottom:10px}
   .addbar{display:flex;gap:8px}
   .addbar input{flex:1}
   .addbar button{flex:0 0 auto;padding:8px 12px}
+
+  /* one editable row per allowed pair */
+  .pairrow{border:1px solid var(--border);border-radius:10px;padding:10px 12px;
+           margin-bottom:8px;background:var(--panel2)}
+  .pairrow .pairmeta{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .pairrow .sym{font-weight:700;font-size:14px;flex:0 0 auto;min-width:96px}
+  .pairrow .mini{flex:1 1 150px;min-width:120px}
+  .pairrow .mini input{padding:6px 8px;font-size:13px}
+  .pairrow .acts{display:flex;gap:6px;flex:0 0 auto}
+  .pairrow .acts button{padding:7px 11px;font-size:12px}
+  .pairrow .warnline{font-size:12px;color:var(--warn);margin-top:8px}
+  /* a real monospace block: .mono only sets tabular figures */
+  .payload{margin-top:10px;border:1px solid var(--border);border-radius:8px;
+           background:var(--bg);padding:10px}
+  .payload .pl{font-size:11px;text-transform:uppercase;letter-spacing:.05em;
+               color:var(--muted);margin-bottom:4px}
+  .payload code{display:block;white-space:pre-wrap;word-break:break-all;
+                font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+                color:var(--text);margin-bottom:8px;user-select:all}
+  .payload .placts{display:flex;gap:8px}
+  /* inline, so it must NOT inherit the block layout of .payload code */
+  .payload .hint .k{font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+                    color:var(--text)}
+  .payload .placts button{padding:6px 10px;font-size:12px}
 
   /* status table */
   table{width:100%;border-collapse:collapse;font-size:13px}
@@ -163,14 +180,15 @@
 
       <div class="card">
         <h2>Allowed pairs</h2>
-        <div class="chips" id="chips"></div>
+        <div id="pairList"></div>
         <div class="addbar">
           <input type="text" id="pairInput" list="pairSuggest" placeholder="e.g. ETHUSDT or 1000PEPEUSDT" autocomplete="off">
           <datalist id="pairSuggest"></datalist>
           <button id="addPairBtn">Add</button>
         </div>
         <p class="hint" style="margin-top:10px">TradingView alerts trade whatever <b>allowed</b> pair they
-           name. Remove a pair here and the bot will reject alerts for it (existing positions are not touched).</p>
+           name. Remove a pair here and the bot will reject alerts for it (existing positions are not touched).
+           Give each pair its own <b>name</b> and <b>qty</b>, then copy that pair's alert.</p>
         <div class="kv" style="margin-top:8px">
           <span class="muted">Settings file</span><span class="mono" id="persistPath">in-memory</span>
         </div>
@@ -262,12 +280,7 @@ function applyState(s) {
   renderTrading(s.trading_enabled);
   setRiskInputs(s);
 
-  // pairs
-  $("chips").innerHTML = s.allowed_symbols.map(sym =>
-    `<span class="chip">${esc(sym)}<button data-remove="${esc(sym)}" title="Remove">×</button></span>`
-  ).join("") || '<span class="muted">No pairs allowed — add one below.</span>';
-  document.querySelectorAll("[data-remove]").forEach(b =>
-    b.onclick = () => changePairs([], [b.dataset.remove]));
+  renderPairs(s);
 
   $("persistPath").textContent = s.persistence_path || "in-memory (resets on redeploy)";
 
@@ -288,6 +301,120 @@ function renderTrading(on) {
     ? "Alerts open / flip positions normally."
     : "When off, alerts are accepted and logged but never traded.";
 }
+// Built here, in applyState, and never in renderLive: the 10s poll rewrites
+// renderLive's subtree and would wipe an input the user is halfway through.
+function renderPairs(s) {
+  const meta = s.pair_meta || {};
+  const list = $("pairList");
+  if (!s.allowed_symbols.length) {
+    list.innerHTML = '<p class="muted">No pairs allowed — add one below.</p>';
+    return;
+  }
+  const pct = Math.round((s.margin_percent || 0) * 100);
+  list.innerHTML = s.allowed_symbols.map(sym => {
+    const m = meta[sym] || {};
+    const qty = m.qty == null ? "" : m.qty;
+    // A pair with no qty still auto-sizes at margin_percent of the *whole*
+    // wallet, which two pairs cannot both draw on. Say so where it matters.
+    const warn = (s.allowed_symbols.length > 1 && m.qty == null)
+      ? `<div class="warnline">No qty saved — this pair would auto-size at ${pct}% of the
+         whole wallet, which two pairs cannot share. Save a qty to trade it alongside another.</div>`
+      : "";
+    return `<div class="pairrow">
+      <div class="pairmeta">
+        <span class="sym">${esc(sym)}</span>
+        <span class="mini"><label>Name</label>
+          <input type="text" maxlength="20" autocomplete="off"
+                 data-label="${esc(sym)}" value="${esc(m.label || "")}"
+                 placeholder="${esc(sym.toLowerCase())}"></span>
+        <span class="mini"><label>Qty (base units)</label>
+          <input type="number" step="any" min="0" data-qty="${esc(sym)}" value="${esc(qty)}"
+                 placeholder="auto"></span>
+        <span class="acts">
+          <button class="ghost" data-save="${esc(sym)}">Save</button>
+          <button class="ghost" data-alert="${esc(sym)}">Alert</button>
+          <button class="danger" data-remove="${esc(sym)}" title="Remove">×</button>
+        </span>
+      </div>
+      <div data-out="${esc(sym)}"></div>
+      ${warn}
+    </div>`;
+  }).join("");
+
+  list.querySelectorAll("[data-remove]").forEach(b =>
+    b.onclick = () => changePairs([], [b.dataset.remove]));
+  list.querySelectorAll("[data-save]").forEach(b =>
+    b.onclick = () => savePair(b.dataset.save));
+  list.querySelectorAll("[data-alert]").forEach(b =>
+    b.onclick = () => showAlert(b.dataset.alert));
+  list.querySelectorAll("[data-label],[data-qty]").forEach(i =>
+    i.addEventListener("keydown", e => {
+      if (e.key === "Enter") savePair(i.dataset.label || i.dataset.qty);
+    }));
+}
+// Symbols are [A-Z0-9]+USDT by construction, so an attribute selector needs no escaping.
+const sel = (attr, sym) => document.querySelector(`[${attr}="${sym}"]`);
+
+async function savePair(sym) {
+  const labelEl = sel("data-label", sym), qtyEl = sel("data-qty", sym);
+  const label = labelEl ? labelEl.value.trim() : "";
+  const qty = qtyEl ? qtyEl.value.trim() : "";
+  // null clears a field; the server merges, so saving one leaves the other alone.
+  await postConfig(
+    { pair_meta: { [sym]: { label: label || null, qty: qty === "" ? null : Number(qty) } } },
+    `${sym} saved`);
+}
+
+async function showAlert(sym) {
+  const out = sel("data-out", sym);
+  if (!out) return;
+  out.innerHTML = '<p class="hint">Loading…</p>';
+  try {
+    const t = await api("/api/dashboard/alert-template?symbol=" + encodeURIComponent(sym));
+    out.innerHTML = `<div class="payload">
+      <div class="pl">Webhook URL — into the alert's Webhook URL field</div>
+      <code>${esc(t.webhook_url)}</code>
+      <div class="pl">Message — into the alert's Message field</div>
+      <code>${esc(t.payload_text)}</code>
+      <p class="hint">The message above says <span class="k">"side": "buy"</span>.
+      For a short alert change it to <span class="k">"sell"</span>, or use the
+      TradingView placeholder <span class="k">{{strategy.order.action}}</span>
+      so one alert covers both directions.</p>
+      <div class="placts">
+        <button class="ghost" data-copy="url">Copy URL</button>
+        <button class="ghost" data-copy="json">Copy message</button>
+        <button class="ghost" data-hide="1">Hide</button>
+      </div>
+    </div>`;
+    out.querySelector('[data-copy="url"]').onclick = () => copy(t.webhook_url, "Webhook URL copied");
+    out.querySelector('[data-copy="json"]').onclick = () => copy(t.payload_text, "Alert message copied");
+    out.querySelector("[data-hide]").onclick = () => { out.innerHTML = ""; };
+  } catch (e) {
+    out.innerHTML = "";
+    if (e.message !== "auth") toast(e.message, true);
+  }
+}
+
+async function copy(text, okMsg) {
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text);
+    } else {
+      // No async clipboard outside a secure context (a LAN address, say).
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand("copy");
+      ta.remove();
+    }
+    toast(okMsg);
+  } catch (e) {
+    toast("Could not copy — select the text and copy it manually", true);
+  }
+}
 function setRiskInputs(s) {
   $("leverage").value = s.leverage;
   $("leverage").max = s.max_leverage;
@@ -307,13 +434,20 @@ function renderLive(s) {
   $("wallet").textContent = fmtUSD(s.wallet_balance);
 
   const open = new Map(s.positions.map(p => [p.symbol, p]));
+  const meta = s.pair_meta || {};
+  // The pair's name, shown under its symbol so a trade is identifiable here the
+  // same way it is on Bybit and in the logs.
+  const nameTag = sym => {
+    const label = (meta[sym] || {}).label;
+    return label ? `<br><span class="hint">${esc(label)}</span>` : "";
+  };
   const rows = s.allowed_symbols.map(sym => {
     const p = open.get(sym);
-    if (!p) return `<tr><td><b>${esc(sym)}</b></td><td class="muted" colspan="8">flat</td><td></td></tr>`;
+    if (!p) return `<tr><td><b>${esc(sym)}</b>${nameTag(sym)}</td><td class="muted" colspan="8">flat</td><td></td></tr>`;
     const sideCls = p.side === "Buy" ? "side-buy" : "side-sell";
     const sideTxt = p.side === "Buy" ? "LONG" : "SHORT";
     return `<tr>
-      <td><b>${esc(p.symbol)}</b></td>
+      <td><b>${esc(p.symbol)}</b>${nameTag(p.symbol)}</td>
       <td class="${sideCls}">${sideTxt}</td>
       <td class="mono">${p.size}</td>
       <td class="mono">${fmtPrice(p.avg_price)}</td>

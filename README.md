@@ -47,12 +47,36 @@ Open `https://<project>.up.railway.app/dashboard` and sign in with `DASHBOARD_PA
 - **Margin %** — fraction of wallet balance used per trade (auto-sizing).
 - **Stop-loss distance %** and an optional **take-profit distance %** (0 = no TP).
 - **Allowed pairs** — search the real Bybit perpetual list (e.g. `ETHUSDT`, `1000PEPEUSDT`)
-  and add/remove them. Alerts trade whichever allowed pair they name.
+  and add/remove them. Alerts trade whichever allowed pair they name. Each pair also gets a
+  **name** and a saved **qty**, and its own **Alert** button (see *Trading several pairs*).
 - **Live status** — USDT wallet balance and every open position per allowed pair: side,
   size, entry, live mark price, the **real SL/TP read from Bybit's open stop-orders**
   (TKKBOT attaches these order-level, so they do not appear on the position row), live PnL in
   dollars and as a % of the position margin, plus a per-pair **Close** button (reduce-only).
   The panel auto-refreshes every ~10 seconds.
+
+### Trading several pairs
+
+Auto-sizing commits `MARGIN_USAGE_PERCENT` (90% by default) of the **whole** wallet on every
+alert, so two pairs drawing on one balance cannot both open — the second is rejected by Bybit
+for insufficient margin. Give each pair its own **qty** instead:
+
+1. Add the pair, type a **Name** (`btc-scalp`) and a **Qty** in base units, and **Save**.
+2. Click **Alert** on that pair. It shows the webhook URL and the exact JSON body to paste
+   into a TradingView alert, with **Copy** buttons for each.
+3. Repeat per pair. Every pair keeps its own name and qty, and all of them trade through the
+   same bot.
+
+Sizing for an entry resolves in this order: the alert's own `qty`, else that pair's saved
+qty, else auto-size. The saved qty therefore only applies to an alert that omits `qty` — and
+never to `side: "close"`, which always closes the whole position.
+
+The **name** appears in the bot's logs and on the order's `orderLinkId` on Bybit
+(`tkk_<name>_<random>`), so a trade is identifiable in both. Names must be 1–20 characters of
+`a-z`, `0-9`, `-` or `_`, and no two pairs may share one.
+
+A pair with **no** saved qty is flagged in the dashboard whenever more than one pair is
+allowed, because that pair still auto-sizes and can over-commit the wallet.
 
 Changes are saved to a JSON file (see `TKKBOT_CONFIG_PATH`) and take effect on the **next
 entry**. They do not move the stop-loss of a position that is already open — send the opposite
@@ -64,8 +88,8 @@ are never touched when you remove a pair from the list.
 | `secret` | yes | Must equal your `WEBHOOK_SECRET` env var |
 | `symbol` | yes | `BTCUSDT`, `ETHUSDT`, … (TradingView forms like `BINANCE:BTCUSDT.P` are normalized) |
 | `side` | yes | `buy` / `long` / `sell` / `short` / `close` / `exit` |
-| `qty` | no | Base-asset size. Omitted → auto-sized from `MARGIN_USD_PER_TRADE` |
-| `leverage` | no | Defaults to `DEFAULT_LEVERAGE`; capped at `MAX_LEVERAGE` |
+| `qty` | no | Base-asset size. Omitted → the pair's saved qty, else auto-sized from `MARGIN_USAGE_PERCENT` |
+| `leverage` | no | **Ignored** — the dashboard sets leverage. Accepted so existing alerts keep working |
 | `tp` / `sl` | no | Prices. Omitted → computed from `DEFAULT_TP_PERCENT` / `DEFAULT_SL_PERCENT` |
 | `id` | no | Idempotency key for duplicate suppression (recommended) |
 
@@ -84,7 +108,7 @@ app/
   runtime_config.py   Dashboard-tunable settings, persisted to a file (Railway volume)
   dashboard.py        /dashboard page + /api/dashboard/* (login, state, config, pairs, close)
   static/dashboard.html  Self-contained dashboard front-end (no build step)
-tests/                pytest suite (132 tests)
+tests/                pytest suite (204 tests)
 Procfile           web: uvicorn app.main:app --port $PORT
 runtime.txt        Python 3.12
 railway.json       Railway deploy config (healthcheck on /health)
@@ -120,6 +144,7 @@ Create an alert on a chart (or a strategy's order event). In the alert settings:
 
 - **Conditions/Alert**: whatever triggers your signal.
 - **Notifications → Webhook URL**: `https://<project>.up.railway.app/webhook/tradingview`
+  (the dashboard's **Alert** button on each pair prints this, so you can copy it)
 - **Message** — paste one of these templates:
 
 **Simple alert (static symbol):**
@@ -129,11 +154,12 @@ Create an alert on a chart (or a strategy's order event). In the alert settings:
   "symbol": "BTCUSDT",
   "side": "buy",
   "qty": 0.001,
-  "leverage": 5,
   "tp": 72000,
   "sl": 66000
 }
 ```
+Omit `qty` to use that pair's saved quantity (or auto-size if it has none). `leverage` is
+not listed because the dashboard sets it — sending it changes nothing.
 
 **Strategy alert (placeholders resolved at fire time):**
 ```json
@@ -142,13 +168,14 @@ Create an alert on a chart (or a strategy's order event). In the alert settings:
   "symbol": "{{ticker}}",
   "side": "{{strategy.order.action}}",
   "qty": {{strategy.order.contracts}},
-  "leverage": 5,
   "price": {{close}},
   "id": "{{ticker}}_{{strategy.order.action}}_{{time}}"
 }
 ```
 
 - `{{strategy.order.action}}` → `buy` / `sell`; `{{ticker}}` → e.g. `BTCUSDT` or `BINANCE:BTCUSDT.P`.
+- Include `{{time}}` (or any per-signal value) in `id`: a *static* `id` makes every alert on
+  that pair share one cooldown key, so a buy→sell flip inside `COOLDOWN_SECONDS` is suppressed.
 - `"id"` makes each trigger unique but stable across TradingView's automatic retries, so a duplicate can never double-trade.
 - Set alert frequency to **Once Per Bar Close** to avoid intra-bar duplicate triggers.
 - **Never** put your Bybit API key in the alert message — only the webhook secret.
@@ -199,7 +226,7 @@ curl -X POST http://localhost:8000/webhook/tradingview ^
   -d "{\"secret\":\"YOUR_SECRET\",\"symbol\":\"BTCUSDT\",\"side\":\"buy\",\"qty\":0.001,\"leverage\":5}"
 ```
 
-Run tests: `pytest -q` (132 tests, no real API calls).
+Run tests: `pytest -q` (204 tests, no real API calls).
 
 ## 6. Going live — checklist
 

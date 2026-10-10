@@ -9,9 +9,16 @@ survives restarts and redeploys.
 
 The dashboard is the source of truth for these bot-wide parameters: the
 webhook reads them here on every alert rather than from the frozen env object.
+
+Alongside the allowlist sits ``pair_meta``: a per-symbol label (so a trade is
+identifiable on Bybit and in the logs) and an optional saved base-unit
+quantity. The saved quantity exists because the global auto-size commits
+``margin_percent`` of the *whole* wallet per alert, which cannot fund a second
+pair — see ``pair_qty``.
 """
 import json
 import logging
+import math
 import os
 import re
 import tempfile
@@ -23,6 +30,14 @@ logger = logging.getLogger(__name__)
 
 # USDT perpetual tickers look like BTCUSDT / ETHUSDT / 1000PEPEUSDT.
 _SYMBOL_RE = re.compile(r"^[A-Z0-9]+USDT$")
+
+# A pair's short name, e.g. "btc-scalp". Kept to 20 chars because it is embedded
+# in Bybit's orderLinkId, which is capped at 36 (see ``build_order_link_id``).
+_LABEL_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,19}$")
+
+# Fields accepted inside one ``pair_meta`` entry. Unknown keys are rejected so a
+# typo'd dashboard field is reported instead of silently ignored.
+_META_KEYS = frozenset({"label", "qty"})
 
 
 class ConfigError(Exception):
@@ -70,6 +85,158 @@ def _as_list(value, name: str) -> list:
     raise ConfigError(f"'{name}' must be a list of symbols")
 
 
+def _clean_label(value, name: str) -> str:
+    """Normalise a pair label to lowercase and validate its shape."""
+    label = str(value or "").strip().lower()
+    if not _LABEL_RE.match(label):
+        raise ConfigError(
+            f"{name}: {value!r} must be 1-20 characters of a-z, 0-9, '-' or '_', "
+            "and start with a letter or digit"
+        )
+    return label
+
+
+def _finite_qty(value, name: str) -> float:
+    """Validate a saved quantity: a finite number greater than zero."""
+    if isinstance(value, bool):
+        raise ConfigError(f"{name} must be a number greater than 0")
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        raise ConfigError(f"{name} must be a number greater than 0")
+    if not math.isfinite(v) or v <= 0:
+        raise ConfigError(f"{name} must be a finite number greater than 0")
+    return v
+
+
+def _effective_label(meta: dict, symbol: str) -> str:
+    """A pair's label, falling back to its lower-cased symbol."""
+    return (meta.get(symbol) or {}).get("label") or symbol.lower()
+
+
+def _label_conflict(meta: dict, allowed) -> tuple[str, str, str] | None:
+    """Find two allowed pairs that would share one effective label.
+
+    Returns ``(symbol, label, owner)`` for the pair that loses, or ``None``.
+    Uniqueness is a readability rule — Bybit order IDs carry their own random
+    suffix — so it may refuse a *save* but must never refuse a trade.
+    """
+    seen: dict[str, str] = {}
+    for symbol in sorted(allowed):
+        label = _effective_label(meta, symbol)
+        owner = seen.get(label)
+        if owner is not None:
+            return symbol, label, owner
+        seen[label] = symbol
+    return None
+
+
+def _merge_meta(current: dict, raw, allowed) -> dict:
+    """Apply a dashboard ``pair_meta`` update onto ``current``.
+
+    Fields merge rather than replacing the whole entry, so saving a quantity
+    from the dashboard cannot silently wipe the label sitting next to it in a
+    form the user only half filled in. ``null`` — or an empty string, which is
+    what an emptied input sends — clears one field; ``null`` in place of an
+    entry drops the pair's record entirely.
+    """
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise ConfigError("'pair_meta' must be an object keyed by symbol")
+    keep = set(allowed)
+    meta = {s: dict(m) for s, m in current.items()}
+    for key, entry in raw.items():
+        symbol = _clean_symbol(key, "pair_meta")
+        if symbol not in keep:
+            raise ConfigError(f"pair_meta: {symbol} is not one of the allowed pairs")
+        if entry is None:
+            meta.pop(symbol, None)
+            continue
+        if not isinstance(entry, dict):
+            raise ConfigError(f"pair_meta[{symbol}] must be an object or null")
+        unknown = sorted(set(entry) - _META_KEYS)
+        if unknown:
+            raise ConfigError(
+                f"pair_meta[{symbol}]: unknown field(s) {', '.join(unknown)}"
+            )
+        fields = dict(meta.get(symbol) or {})
+        for field, check in (("label", _clean_label), ("qty", _finite_qty)):
+            if field not in entry:
+                continue
+            value = entry[field]
+            if value is None or (isinstance(value, str) and not value.strip()):
+                fields.pop(field, None)
+                continue
+            fields[field] = check(value, f"pair_meta[{symbol}].{field}")
+        if fields:
+            meta[symbol] = fields
+        else:
+            meta.pop(symbol, None)
+    return meta
+
+
+def _prune_meta(meta: dict, allowed) -> dict:
+    """Drop ``pair_meta`` entries for symbols that are not allowed.
+
+    Applied on both snapshot and commit, so "meta is a subset of allowed" holds
+    by construction on every write — a hand-edited file or a partially applied
+    update cannot leave an entry behind for a pair that was never allowed.
+    """
+    keep = set(allowed)
+    return {s: dict(m) for s, m in meta.items() if s in keep}
+
+
+def _load_meta(raw, allowed) -> dict:
+    """Read persisted ``pair_meta``, skipping anything malformed.
+
+    Never raises — see the call site in ``_load`` for why that matters. Each bad
+    entry is dropped on its own so the rest of the file still applies.
+    """
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        logger.warning("Ignoring non-object pair_meta in TKKBOT config file")
+        return {}
+    keep = set(allowed)
+    meta: dict[str, dict] = {}
+    for key, entry in raw.items():
+        if not isinstance(key, str):
+            continue
+        symbol = key.strip().upper()
+        if symbol not in keep:
+            continue
+        if not isinstance(entry, dict):
+            logger.warning("Ignoring pair_meta[%s]: not an object", symbol)
+            continue
+        clean: dict = {}
+        for field, check in (("label", _clean_label), ("qty", _finite_qty)):
+            if entry.get(field) is None:
+                continue
+            try:
+                clean[field] = check(entry[field], f"pair_meta[{symbol}].{field}")
+            except ConfigError as e:
+                logger.warning("Ignoring %s", e.message)
+        if clean:
+            meta[symbol] = clean
+
+    # Resolve duplicate labels by dropping the loser's, never by refusing to
+    # load: a collision is a naming problem, and the random order-ID suffix
+    # still keeps the two pairs' orders apart on Bybit.
+    while True:
+        conflict = _label_conflict(meta, keep)
+        if conflict is None:
+            return meta
+        symbol, label, owner = conflict
+        logger.warning(
+            "Pair label %r is used by both %s and %s; %s falls back to its symbol",
+            label, owner, symbol, symbol,
+        )
+        meta[symbol].pop("label", None)
+        if not meta[symbol]:
+            del meta[symbol]
+
+
 class RuntimeConfig:
     def __init__(self, settings: Settings, path: str = "", client=None):
         # ``path`` wins over the env var; empty string = in-memory only.
@@ -85,6 +252,9 @@ class RuntimeConfig:
         self.margin_percent: float = settings.margin_usage_percent
         self.trading_enabled: bool = settings.trading_enabled
         self.allowed: set[str] = set(settings.allowed_symbol_set)
+        # Per-symbol {"label": str, "qty": float}; empty until the user names a
+        # pair, so an unlabelled pair still works exactly as it did before.
+        self.pair_meta: dict[str, dict] = {}
         self._load()
 
     # ------------------------------------------------------------- duck typing
@@ -100,13 +270,15 @@ class RuntimeConfig:
 
     # ------------------------------------------------------------------ state
     def _snapshot(self) -> dict:
+        allowed = sorted(self.allowed)
         return {
             "leverage": self.leverage,
             "sl_percent": self.sl_percent,
             "tp_percent": self.tp_percent,
             "margin_percent": self.margin_percent,
             "trading_enabled": self.trading_enabled,
-            "allowed_symbols": sorted(self.allowed),
+            "allowed_symbols": allowed,
+            "pair_meta": _prune_meta(self.pair_meta, allowed),
         }
 
     def to_dict(self) -> dict:
@@ -117,6 +289,16 @@ class RuntimeConfig:
             "max_leverage": self.max_leverage,
             "persistence_path": self.persistence_path,
         }
+
+    def pair_qty(self, symbol: str) -> float | None:
+        """Saved base-unit quantity for ``symbol``; ``None`` means auto-size."""
+        with self._lock:
+            return (self.pair_meta.get(symbol.upper()) or {}).get("qty")
+
+    def pair_label(self, symbol: str) -> str:
+        """Short name for ``symbol``, used in logs and Bybit order IDs."""
+        with self._lock:
+            return _effective_label(self.pair_meta, symbol.upper())
 
     # ------------------------------------------------------------------ load
     def _load(self) -> None:
@@ -157,6 +339,11 @@ class RuntimeConfig:
         except ConfigError as e:
             logger.warning("Ignoring out-of-range value in TKKBOT config file: %s", e.message)
             return
+        # Parsed outside the block above on purpose. That block is
+        # all-or-nothing: a ConfigError there discards the whole file and
+        # reverts every setting to env defaults, so one typo in a pair label
+        # must not also reset the user's leverage and stop-loss.
+        cand["pair_meta"] = _load_meta(data.get("pair_meta"), cand["allowed_symbols"])
         self._commit(cand)
 
     # ------------------------------------------------------------------ save
@@ -188,6 +375,9 @@ class RuntimeConfig:
         self.margin_percent = float(cand["margin_percent"])
         self.trading_enabled = bool(cand["trading_enabled"])
         self.allowed = set(cand["allowed_symbols"])
+        # Pruned on the way in as well as on the way out, so removing a pair
+        # drops its label and saved quantity immediately.
+        self.pair_meta = _prune_meta(cand.get("pair_meta") or {}, self.allowed)
 
     # ----------------------------------------------------------------- update
     def update(self, payload: dict, client=None) -> dict:
@@ -237,3 +427,19 @@ class RuntimeConfig:
                     )
             allowed.add(symbol)
         cand["allowed_symbols"] = sorted(allowed)
+
+        # Meta is applied *after* the pair edits and validated against the
+        # resulting allowlist, so naming a pair and adding it in one request
+        # works. It is also validated against the *new* allowlist, so a pair
+        # being removed in this same request cannot be given a label.
+        if "pair_meta" in payload:
+            cand["pair_meta"] = _merge_meta(
+                cand["pair_meta"], payload["pair_meta"], allowed
+            )
+        conflict = _label_conflict(cand["pair_meta"], allowed)
+        if conflict is not None:
+            symbol, label, owner = conflict
+            raise ConfigError(
+                f"Label '{label}' is already used by {owner} — every pair "
+                "needs its own name"
+            )

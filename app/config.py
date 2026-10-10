@@ -30,6 +30,12 @@ class Settings(BaseSettings):
     # Railway volume: /data/tkkbot_config.json). Empty = settings are in-memory
     # only and reset to env defaults on restart.
     tkkbot_config_path: str = ""
+    # The public origin TradingView should POST to, e.g.
+    # https://tkkbot-production.up.railway.app. Only used to build the
+    # copy-paste alert template. Set it when the app sits behind a proxy that
+    # forwards a host uvicorn does not trust, where the request-derived URL
+    # would otherwise come out as http://0.0.0.0:8000/.
+    public_base_url: str = ""
 
     # --- Safety guardrails ---
     trading_enabled: bool = True

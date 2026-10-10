@@ -7,7 +7,9 @@ signed with the dashboard secret (``DASHBOARD_PASSWORD``, else
 """
 import hashlib
 import hmac
+import json
 import logging
+import re
 import time
 from pathlib import Path
 
@@ -132,15 +134,78 @@ def create_dashboard_router(
             raise HTTPException(status_code=502, detail=str(e))
         return {"pairs": names}
 
+    @router.get("/api/dashboard/alert-template", dependencies=[Depends(require_session)])
+    def alert_template(request: Request, symbol: str = ""):
+        """A ready-to-paste webhook URL and alert body for one pair.
+
+        Deliberately *not* part of ``/api/dashboard/state``: that route is polled
+        every 10s, and this response carries the webhook secret, so it is fetched
+        only when the user asks for a specific pair.
+        """
+        symbol = symbol.strip().upper()
+        if symbol not in runtime.allowed_symbol_set:
+            raise HTTPException(status_code=400, detail=f"{symbol} is not an allowed pair")
+        if not settings.webhook_secret:
+            raise HTTPException(
+                status_code=503,
+                detail="No WEBHOOK_SECRET configured, so there is no alert to copy",
+            )
+        label = runtime.pair_label(symbol)
+        qty = runtime.pair_qty(symbol)
+        # Omit "qty" when the pair has none saved: the alert would fail rather
+        # than fall back, and seeing that in the template is the point.
+        body = {"secret": settings.webhook_secret, "symbol": symbol, "side": "buy"}
+        if qty is not None:
+            body["qty"] = qty
+        return JSONResponse(
+            {
+                "symbol": symbol,
+                "label": label,
+                "qty": qty,
+                "webhook_url": _webhook_url(request, settings),
+                "payload_text": json.dumps(body, indent=2),
+            },
+            headers={"Cache-Control": "no-store"},
+        )
+
     @router.post("/api/dashboard/close", dependencies=[Depends(require_session)])
     def close_position(payload: dict = Body(...)):
         symbol = str(payload.get("symbol") or "").upper()
         if symbol not in runtime.allowed_symbol_set:
             raise HTTPException(status_code=400, detail=f"{symbol} is not an allowed pair")
         try:
-            return client.close_position(symbol)
+            return client.close_position(symbol, label=runtime.pair_label(symbol))
         except BybitError as e:
             logger.warning("Dashboard close failed for %s: %s", symbol, e)
             raise HTTPException(status_code=502, detail=str(e))
 
     return router
+
+
+# Hosts that are never TLS-terminated in front of us: a local or LAN run keeps
+# whatever scheme it was reached on.
+_PRIVATE_HOST_RE = re.compile(
+    r"^(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)"
+)
+
+
+def _webhook_url(request: Request, settings: Settings) -> str:
+    """The public webhook URL to put in a TradingView alert.
+
+    ``PUBLIC_BASE_URL`` wins, because the request-derived fallback is not
+    dependable behind a proxy: uvicorn trusts ``X-Forwarded-*`` only from
+    ``forwarded_allow_ips``, and outside that it resolves ``base_url`` to the
+    container's own bind address (``http://0.0.0.0:8000/``). The Procfile passes
+    ``--forwarded-allow-ips=*`` so the fallback works too; the setting remains
+    the belt-and-braces for any other host.
+    """
+    base = (settings.public_base_url or "").strip().rstrip("/")
+    if not base:
+        base = str(request.base_url).rstrip("/")
+        # A public host is TLS-terminated upstream, so an http:// base means the
+        # proxy headers were dropped. Left as-is, that URL gets pasted into an
+        # alert where the redirect to https can turn the POST into a GET.
+        host = base.split("://", 1)[-1].split("/", 1)[0]
+        if base.startswith("http://") and not _PRIVATE_HOST_RE.match(host):
+            base = "https://" + base[len("http://"):]
+    return f"{base}/webhook/tradingview"

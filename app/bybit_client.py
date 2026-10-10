@@ -6,6 +6,7 @@ and translates responses/errors for the rest of TKKBOT.
 """
 import logging
 import math
+import re
 import time
 import uuid
 
@@ -17,9 +18,40 @@ from .signals import TradeSignal
 
 logger = logging.getLogger(__name__)
 
+# Bybit caps orderLinkId at 36 characters and allows only [A-Za-z0-9_-].
+_ORDER_LINK_MAX = 36
+_ORDER_LINK_PREFIX = "tkk"
+
 
 class BybitError(Exception):
     """Any failure talking to Bybit, or a non-zero retCode on an order call."""
+
+
+def build_order_link_id(label: str, token: str) -> str:
+    """Build a unique, human-readable Bybit ``orderLinkId``.
+
+    The shape is ``tkk_<label>_<token>``: the label makes an order identifiable
+    in the Bybit UI and in the logs, and the token keeps it unique, because
+    Bybit rejects a reused orderLinkId. The label is sanitised and clamped here
+    rather than trusted — this is the last point before it reaches the exchange.
+
+    Nothing in TKKBOT looks an order up by orderLinkId, so renaming a pair while
+    a position is open is safe. Do not start mapping orderLinkId back to a
+    position without revisiting that.
+    """
+    # The final shape is prefix + "_" + label + "_" + token, so the two
+    # separators count against both budgets.
+    _fixed = len(_ORDER_LINK_PREFIX) + 2
+    # Bound the token first so the label budget below can never go negative.
+    token = str(token or "").strip()[: _ORDER_LINK_MAX - _fixed]
+    safe = re.sub(r"[^A-Za-z0-9_-]", "", str(label or ""))
+    # Clamp the label rather than the finished ID, so the token that guarantees
+    # uniqueness is never the part that gets cut.
+    safe = safe[: max(_ORDER_LINK_MAX - _fixed - len(token), 0)]
+    link = f"{_ORDER_LINK_PREFIX}_{safe}_{token}" if safe else f"{_ORDER_LINK_PREFIX}_{token}"
+    if len(link) > _ORDER_LINK_MAX:  # pragma: no cover - defensive
+        raise BybitError(f"orderLinkId would exceed {_ORDER_LINK_MAX} chars: {link!r}")
+    return link
 
 
 class BybitClient:
@@ -213,6 +245,7 @@ class BybitClient:
         leverage: int | None = None,
         tp: float | None = None,
         sl: float | None = None,
+        label: str = "",
     ) -> dict:
         """Open/adjust a market order with optional leverage and attached TP/SL."""
         if leverage is not None:
@@ -234,7 +267,7 @@ class BybitClient:
             "qty": format_qty(qty_rounded),
             "timeInForce": "IOC",
             "positionIdx": 0,
-            "orderLinkId": f"tkkbot_{uuid.uuid4().hex[:12]}",
+            "orderLinkId": build_order_link_id(label, uuid.uuid4().hex[:8]),
         }
         if tp is not None:
             params["takeProfit"] = format_price(tp)
@@ -246,12 +279,15 @@ class BybitClient:
         resp = self._call("place_order", params)
         result = resp.get("result", {})
         logger.info(
-            "Order placed: symbol=%s side=%s qty=%s tp=%s sl=%s orderId=%s",
-            symbol, side, qty_rounded, tp, sl, result.get("orderId"),
+            "Order placed: symbol=%s side=%s qty=%s tp=%s sl=%s link=%s orderId=%s",
+            symbol, side, qty_rounded, tp, sl, params["orderLinkId"],
+            result.get("orderId"),
         )
         return {"order_id": result.get("orderId"), "order_link_id": params["orderLinkId"]}
 
-    def close_position(self, symbol: str, qty: float | None = None) -> dict:
+    def close_position(
+        self, symbol: str, qty: float | None = None, label: str = ""
+    ) -> dict:
         """Reduce-only close of the current one-way position (exchange is source of truth)."""
         position = self.get_position(symbol)
         if position is None:
@@ -271,7 +307,7 @@ class BybitClient:
             "timeInForce": "IOC",
             "positionIdx": 0,
             "reduceOnly": True,
-            "orderLinkId": f"tkkbot_{uuid.uuid4().hex[:12]}",
+            "orderLinkId": build_order_link_id(label, uuid.uuid4().hex[:8]),
         }
         resp = self._call("place_order", params)
         result = resp.get("result", {})
@@ -320,6 +356,14 @@ class BybitClient:
     def _raise_if_error(resp: dict, action: str) -> None:
         if str(resp.get("retCode")) != "0":
             raise BybitError(f"{action} failed (retCode={resp.get('retCode')}): {resp.get('retMsg')}")
+
+    def round_qty(self, symbol: str, qty: float) -> float:
+        """The largest valid quantity not exceeding ``qty`` for ``symbol``.
+
+        Public so the webhook can validate the exact number it will send, rather
+        than a pre-rounding value that ``place_market_order`` may floor to zero.
+        """
+        return self._round_qty_to_step(symbol, qty)
 
     def _round_qty_to_step(self, symbol: str, qty: float) -> float:
         step = self.get_qty_step(symbol)

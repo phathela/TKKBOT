@@ -108,6 +108,11 @@ def _handle_webhook(
     safety.validate_trading_enabled(runtime)
     safety.validate_symbol(signal.symbol, runtime)
 
+    # The pair's short name: identifies this pair's orders on Bybit and in the
+    # logs. Read once, so a dashboard edit mid-alert cannot split one trade's
+    # two legs across two different labels.
+    label = runtime.pair_label(signal.symbol)
+
     # The dashboard is authoritative for leverage; ignore whatever the alert says
     # (their alerts carry "leverage": 5, which would otherwise defeat the dashboard).
     if signal.leverage is not None and signal.leverage != runtime.leverage:
@@ -125,10 +130,19 @@ def _handle_webhook(
         return JSONResponse({"accepted": False, "reason": "cooldown"}, status_code=200)
 
     if signal.is_close:
-        result = client.close_position(signal.symbol, qty=signal.qty)
-        logger.info("Close executed: %s -> %s", signal.symbol, result)
+        # A close always means flat. The per-pair saved quantity must NOT apply
+        # here: it would turn a full close into a partial one and strand the
+        # remainder of the position.
+        result = client.close_position(signal.symbol, qty=signal.qty, label=label)
+        logger.info("Close executed: %s label=%s -> %s", signal.symbol, label, result)
         return JSONResponse(
-            {"accepted": True, "action": "close", "symbol": signal.symbol, "result": result},
+            {
+                "accepted": True,
+                "action": "close",
+                "symbol": signal.symbol,
+                "label": label,
+                "result": result,
+            },
             status_code=200,
         )
 
@@ -150,53 +164,78 @@ def _handle_webhook(
                     "accepted": True,
                     "action": "hold",
                     "symbol": signal.symbol,
+                    "label": label,
                     "side": position["side"],
                     "reason": "already in this direction",
                 },
                 status_code=200,
             )
-        # Opposite direction open -> reverse.
-        close_result = client.close_position(signal.symbol)
-        logger.info(
-            "Reversing %s -> %s on %s: closed %s",
-            position["side"], target_side, signal.symbol, close_result,
-        )
 
-    # Entry order: resolve qty (auto-size from balance if omitted), TP/SL, leverage.
+    # Everything the entry needs is resolved and validated *before* the reversal
+    # close below. The close used to happen first, so any failure afterwards —
+    # a quantity over a cap, an inverted stop-loss, a quantity below the lot
+    # step — left the bot FLAT, breaking the always-in-the-market guarantee.
+    # A bad alert is now refused with the existing position still open.
     price = client.get_price(signal.symbol)
     if price is None:
         raise BybitError(f"Could not fetch current price for {signal.symbol}")
 
-    qty = signal.qty
-    if qty is None:
-        balance = client.get_balance()
-        margin = balance * runtime.margin_percent  # e.g. 90% of wallet balance
-        qty = (margin * runtime.leverage) / price
-        logger.info(
-            "Auto-sized qty %s for %s (margin=$%s = %.0f%% of balance $%s, %sx, price=%s)",
-            qty, signal.symbol, margin, runtime.margin_percent * 100,
-            balance, leverage, price,
-        )
+    qty, qty_source = _resolve_qty(signal, runtime, client, price)
 
-    safety.validate_qty(qty, price, settings)
+    # Validate the rounded quantity — the number that will actually be sent — so
+    # approval here cannot be undone by place_market_order's own rounding.
+    qty = client.round_qty(signal.symbol, qty)
+    if qty <= 0:
+        raise SafetyError(
+            f"Qty for {signal.symbol} is below the minimum lot size "
+            f"({client.get_qty_step(signal.symbol)})",
+            400,
+        )
+    try:
+        safety.validate_qty(qty, price, settings)
+    except SafetyError as e:
+        # Say where the number came from. An alert that omits qty is sized from
+        # the pair's saved setting, and the user has to know that to fix it.
+        hint = _QTY_HINTS.get(qty_source)
+        if hint is None:
+            raise
+        raise SafetyError(f"{e.message} (qty {qty} came from {hint})", e.status_code) from e
 
     tp, sl = client.compute_tp_sl(
         signal, price, tp_percent=runtime.tp_percent, sl_percent=runtime.sl_percent
     )
     safety.validate_tp_sl_side(tp, sl, price, target_side)
+
+    # Applying leverage is itself an exchange call, and it can fail — a symbol
+    # whose own maximum sits below the dashboard's setting, for instance. It is
+    # done here, and not inside place_market_order, so that failure also lands
+    # before the reversal close rather than after it. Bybit treats re-applying
+    # the current leverage as success, so this is safe to repeat.
+    client.set_leverage(signal.symbol, leverage)
+
+    if position is not None:
+        close_result = client.close_position(signal.symbol, label=label)
+        logger.info(
+            "Reversing %s -> %s on %s: closed %s",
+            position["side"], target_side, signal.symbol, close_result,
+        )
+
+    # leverage=None: already applied above.
     result = client.place_market_order(
-        signal.symbol, target_side, qty, leverage=leverage, tp=tp, sl=sl
+        signal.symbol, target_side, qty, leverage=None, tp=tp, sl=sl, label=label
     )
 
-    logger.info("Entry executed: %s %s %s tp=%s sl=%s -> %s",
-                signal.symbol, target_side, qty, tp, sl, result)
+    logger.info("Entry executed: %s %s %s tp=%s sl=%s label=%s qty_source=%s -> %s",
+                signal.symbol, target_side, qty, tp, sl, label, qty_source, result)
     return JSONResponse(
         {
             "accepted": True,
             "action": "entry",
             "symbol": signal.symbol,
+            "label": label,
             "side": target_side,
             "qty": qty,
+            "qty_source": qty_source,
             "leverage": leverage,
             "tp": tp,
             "sl": sl,
@@ -204,6 +243,44 @@ def _handle_webhook(
         },
         status_code=200,
     )
+
+
+# Appended to a guardrail failure so the user can tell an alert's own qty from
+# the one this pair remembers.
+_QTY_HINTS = {
+    "pair_saved": "this pair's saved quantity — change it in the dashboard",
+    "auto": "auto-sizing from the wallet balance",
+}
+
+
+def _resolve_qty(
+    signal: signals.TradeSignal, runtime: RuntimeConfig, client: BybitClient, price: float
+) -> tuple[float, str]:
+    """Resolve the entry quantity, and say where it came from.
+
+    Precedence: the alert's own ``qty``, else the pair's saved quantity, else
+    auto-size from the wallet. The middle step is what makes several pairs
+    possible at once — auto-size commits ``margin_percent`` of the *whole*
+    wallet on every alert, so a second pair drawing on the same balance is
+    rejected by Bybit for insufficient margin.
+    """
+    if signal.qty is not None:
+        return signal.qty, "alert"
+
+    saved = runtime.pair_qty(signal.symbol)
+    if saved is not None:
+        logger.info("No qty in alert; using the saved qty %s for %s", saved, signal.symbol)
+        return saved, "pair_saved"
+
+    balance = client.get_balance()
+    margin = balance * runtime.margin_percent  # e.g. 90% of wallet balance
+    qty = (margin * runtime.leverage) / price
+    logger.info(
+        "Auto-sized qty %s for %s (margin=$%s = %.0f%% of balance $%s, %sx, price=%s)",
+        qty, signal.symbol, margin, runtime.margin_percent * 100,
+        balance, runtime.leverage, price,
+    )
+    return qty, "auto"
 
 
 settings = get_settings()

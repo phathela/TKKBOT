@@ -1,8 +1,10 @@
+import re
+
 import pytest
 from pybit.exceptions import InvalidRequestError
 
 from conftest import make_settings
-from app.bybit_client import BybitClient, BybitError, format_qty
+from app.bybit_client import BybitClient, BybitError, build_order_link_id, format_qty
 from app.signals import TradeSignal
 
 
@@ -79,7 +81,8 @@ def test_place_market_order_builds_correct_params():
     assert params["takeProfit"] == "72000"
     assert params["stopLoss"] == "66000"
     assert params["tpslMode"] == "Partial"
-    assert params["orderLinkId"].startswith("tkkbot_")
+    # tkk_<label>_<token>; the label is empty here because no pair name was given.
+    assert re.fullmatch(r"tkk_[0-9a-f]{8}", params["orderLinkId"])
 
 
 def test_place_market_order_rounds_qty_to_lot_step():
@@ -408,3 +411,67 @@ def test_pnl_percent_none_without_leverage():
     assert positions[0]["leverage"] is None
     assert positions[0]["mark_price"] is None
     assert positions[0]["pnl_percent"] is None
+
+
+# ---- orderLinkId: unique per order, identifiable per pair -------------------
+
+def test_order_link_id_shape_and_length():
+    link = build_order_link_id("btc-scalp", "a1b2c3d4")
+    assert link == "tkk_btc-scalp_a1b2c3d4"
+    assert len(link) <= 36          # Bybit's cap
+    assert re.fullmatch(r"[A-Za-z0-9_-]+", link)
+
+
+def test_order_link_id_keeps_the_longest_allowed_label_under_the_cap():
+    label = "a" * 20                # the maximum _LABEL_RE permits
+    link = build_order_link_id(label, "a1b2c3d4")
+    assert link == f"tkk_{label}_a1b2c3d4"
+    assert len(link) == 33
+
+
+def test_order_link_id_clamps_an_overlong_label_but_keeps_the_token():
+    """The token guarantees uniqueness, so it must never be the part cut."""
+    link = build_order_link_id("x" * 200, "a1b2c3d4")
+    assert link.endswith("_a1b2c3d4")
+    assert len(link) <= 36
+
+
+def test_order_link_id_strips_characters_bybit_rejects():
+    assert build_order_link_id("btc scalp!", "tok") == "tkk_btcscalp_tok"
+
+
+def test_order_link_id_without_a_label_is_still_valid():
+    assert build_order_link_id("", "a1b2c3d4") == "tkk_a1b2c3d4"
+    assert build_order_link_id(None, "a1b2c3d4") == "tkk_a1b2c3d4"
+
+
+def test_place_market_order_carries_the_pair_label():
+    client = make_client()
+    result = client.place_market_order("BTCUSDT", "Buy", 0.001, label="btc-scalp")
+    _, params = client.session.calls[-1]
+    assert params["orderLinkId"] == result["order_link_id"]
+    assert params["orderLinkId"].startswith("tkk_btc-scalp_")
+
+
+def test_two_orders_never_share_an_order_link_id():
+    """Bybit rejects a reused orderLinkId, so the token must vary."""
+    links = {
+        client_link
+        for client_link in (
+            make_client().place_market_order("BTCUSDT", "Buy", 0.001, label="btc")["order_link_id"]
+            for _ in range(5)
+        )
+    }
+    assert len(links) == 5
+
+
+def test_close_position_carries_the_pair_label():
+    client = make_client()
+    client.session.positions = [
+        {"symbol": "BTCUSDT", "side": "Buy", "size": "0.001",
+         "avgPrice": "70000", "positionIdx": 0}
+    ]
+    client.close_position("BTCUSDT", label="btc-scalp")
+    _, params = client.session.calls[-1]
+    assert params["orderLinkId"].startswith("tkk_btc-scalp_")
+    assert params["reduceOnly"] is True

@@ -1,3 +1,5 @@
+import json
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -28,7 +30,7 @@ class FakeClient:
     def pair_exists(self, symbol):
         return symbol in self.pairs
 
-    def close_position(self, symbol, qty=None):
+    def close_position(self, symbol, qty=None, label=""):
         self.closed.append((symbol, qty))
         return {"order_id": "c1", "closed_qty": 0.001}
 
@@ -36,11 +38,13 @@ class FakeClient:
 PASSWORD = "test-secret"
 
 
-def build_app(cfg_path, client=None, **settings_overrides):
-    settings = make_settings(webhook_secret=PASSWORD, max_leverage=100, **settings_overrides)
+def build_app(cfg_path, client=None, base_url="http://testserver", **settings_overrides):
+    settings_overrides.setdefault("webhook_secret", PASSWORD)
+    settings = make_settings(max_leverage=100, **settings_overrides)
     client = client or FakeClient()
     runtime = RuntimeConfig(settings, path=str(cfg_path), client=client)
-    return TestClient(create_app(settings=settings, client=client, runtime=runtime)), client
+    app = create_app(settings=settings, client=client, runtime=runtime)
+    return TestClient(app, base_url=base_url), client
 
 
 def login(tc):
@@ -175,3 +179,93 @@ def test_settings_persist_across_restart(tmp_path):
     state = tc2.get("/api/dashboard/state").json()
     assert state["leverage"] == 10
     assert state["margin_percent"] == pytest.approx(0.5)
+
+
+# ---- copy-paste alert templates --------------------------------------------
+
+def test_alert_template_requires_login(tmp_path):
+    tc, _ = build_app(tmp_path / "cfg.json")
+    assert tc.get("/api/dashboard/alert-template?symbol=BTCUSDT").status_code == 401
+
+
+def test_alert_template_returns_a_pasteable_url_and_body(tmp_path):
+    tc, _ = build_app(tmp_path / "cfg.json", base_url="http://localhost:8000")
+    login(tc)
+    tc.post("/api/dashboard/config",
+            json={"pair_meta": {"BTCUSDT": {"label": "btc-scalp", "qty": 0.005}}})
+
+    body = tc.get("/api/dashboard/alert-template?symbol=BTCUSDT").json()
+    assert body["symbol"] == "BTCUSDT"
+    assert body["label"] == "btc-scalp"
+    assert body["webhook_url"] == "http://localhost:8000/webhook/tradingview"
+
+    # The text must be pasteable as-is: it is what the user copies.
+    parsed = json.loads(body["payload_text"])
+    assert parsed == {"secret": PASSWORD, "symbol": "BTCUSDT", "side": "buy", "qty": 0.005}
+
+
+def test_alert_template_upgrades_a_public_http_url_to_https(tmp_path):
+    """A public host is TLS-terminated upstream; an http URL would be redirected."""
+    tc, _ = build_app(tmp_path / "cfg.json", base_url="http://tkkbot.example.com")
+    login(tc)
+    url = tc.get("/api/dashboard/alert-template?symbol=BTCUSDT").json()["webhook_url"]
+    assert url == "https://tkkbot.example.com/webhook/tradingview"
+
+
+def test_alert_template_omits_qty_when_none_is_saved(tmp_path):
+    """Omitting qty in the template shows the pair would auto-size."""
+    tc, _ = build_app(tmp_path / "cfg.json")
+    login(tc)
+    body = tc.get("/api/dashboard/alert-template?symbol=BTCUSDT").json()
+    assert body["qty"] is None
+    assert "qty" not in json.loads(body["payload_text"])
+
+
+def test_alert_template_rejects_a_disallowed_symbol(tmp_path):
+    tc, _ = build_app(tmp_path / "cfg.json")
+    login(tc)
+    resp = tc.get("/api/dashboard/alert-template?symbol=DOGEUSDT")
+    assert resp.status_code == 400
+
+
+def test_alert_template_without_a_secret_says_so(tmp_path):
+    """With no webhook secret there is no alert to copy, so say that plainly."""
+    tc, _ = build_app(tmp_path / "cfg.json", webhook_secret="",
+                      dashboard_password=PASSWORD)
+    login(tc)
+    assert tc.get("/api/dashboard/alert-template?symbol=BTCUSDT").status_code == 503
+
+
+def test_alert_template_is_never_cached(tmp_path):
+    """It carries the secret, so no proxy or browser may store it."""
+    tc, _ = build_app(tmp_path / "cfg.json")
+    login(tc)
+    resp = tc.get("/api/dashboard/alert-template?symbol=BTCUSDT")
+    assert resp.headers["cache-control"] == "no-store"
+
+
+def test_public_base_url_overrides_the_request_host(tmp_path):
+    tc, _ = build_app(tmp_path / "cfg.json",
+                      public_base_url="https://tkkbot-production.up.railway.app/")
+    login(tc)
+    url = tc.get("/api/dashboard/alert-template?symbol=BTCUSDT").json()["webhook_url"]
+    assert url == "https://tkkbot-production.up.railway.app/webhook/tradingview"
+
+
+def test_state_never_carries_the_webhook_secret(tmp_path):
+    """The template route is on demand precisely so the polled one stays clean."""
+    tc, _ = build_app(tmp_path / "cfg.json")
+    login(tc)
+    resp = tc.get("/api/dashboard/state")
+    assert PASSWORD not in resp.text
+    assert "secret" not in resp.json()
+
+
+def test_state_exposes_pair_meta_for_the_editor(tmp_path):
+    tc, _ = build_app(tmp_path / "cfg.json")
+    login(tc)
+    tc.post("/api/dashboard/config",
+            json={"pair_meta": {"BTCUSDT": {"label": "btc", "qty": 0.005}}})
+    assert tc.get("/api/dashboard/state").json()["pair_meta"] == {
+        "BTCUSDT": {"label": "btc", "qty": 0.005}
+    }
