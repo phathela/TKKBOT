@@ -57,10 +57,19 @@
   .switch .label{font-size:15px;font-weight:600}
   .switch .sub{font-size:12px;color:var(--muted)}
 
+  /* sections: the page reads top-down — what is running, what is open, what to add */
+  .sect{margin-bottom:28px}
+  .sect > .secthd{margin:0 0 12px}
+  .sect .secthd h2{margin:0 0 4px}
+  .sect .secthd .sub{font-size:12px;color:var(--muted);margin:0}
+  .sect .card:last-child{margin-bottom:0}
+
   /* pairs */
-  .addbar{display:flex;gap:8px}
-  .addbar input{flex:1}
-  .addbar button{flex:0 0 auto;padding:8px 12px}
+  /* the guided "start a new trade" form */
+  .newtrade{border:1px dashed var(--border);border-radius:10px;padding:12px 14px;
+            margin:12px 0 4px;background:var(--panel2)}
+  .newtrade .ntacts{display:flex;gap:8px;margin-top:12px}
+  .newtrade .ntacts button{flex:0 0 auto;padding:9px 14px}
 
   /* one editable row per allowed pair */
   .pairrow{border:1px solid var(--border);border-radius:10px;padding:10px 12px;
@@ -81,10 +90,9 @@
                 font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
                 color:var(--text);margin-bottom:8px;user-select:all}
   .payload .placts{display:flex;gap:8px}
-  /* inline, so it must NOT inherit the block layout of .payload code */
-  .payload .hint .k{font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
-                    color:var(--text)}
   .payload .placts button{padding:6px 10px;font-size:12px}
+  /* a snippet inside prose. Inline, so it must not inherit .payload code's block layout. */
+  .k{font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:var(--text)}
 
   /* status table */
   table{width:100%;border-collapse:collapse;font-size:13px}
@@ -97,6 +105,7 @@
   .banner.err{background:rgba(255,92,92,.12);border:1px solid var(--bad);color:#ffb3b3}
   .banner.warn{background:rgba(245,185,66,.1);border:1px solid var(--warn);color:#ffd78a}
   .hint{font-size:12px;color:var(--muted)}
+  .hint.err{color:var(--bad)}
   .note{margin-top:8px;font-size:12px;color:var(--muted)}
   .kv{display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px dashed var(--panel2)}
   .kv:last-child{border-bottom:none}
@@ -140,18 +149,24 @@
 
     <div id="banners"></div>
 
-    <div class="card">
-      <h2>Trading</h2>
-      <div class="switch">
-        <div class="track" id="tradingTrack" role="switch" tabindex="0"><div class="knob"></div></div>
-        <div>
-          <div class="label" id="tradingLabel">Trading off</div>
-          <div class="sub" id="tradingSub">When off, alerts are accepted &amp; logged but never traded.</div>
+    <section class="sect">
+      <div class="secthd">
+        <h2>Bot now trading</h2>
+        <p class="sub">One bot, and these settings apply to every trade it opens. A change takes
+           effect on the next entry — never on a position that is already open.</p>
+      </div>
+
+      <div class="card">
+        <h2>Trading</h2>
+        <div class="switch">
+          <div class="track" id="tradingTrack" role="switch" tabindex="0"><div class="knob"></div></div>
+          <div>
+            <div class="label" id="tradingLabel">Trading off</div>
+            <div class="sub" id="tradingSub">When off, alerts are accepted &amp; logged but never traded.</div>
+          </div>
         </div>
       </div>
-    </div>
 
-    <div class="grid">
       <div class="card">
         <h2>Risk — applies to the next entry</h2>
         <div class="row">
@@ -177,36 +192,72 @@
         <button class="primary" id="saveRiskBtn">Save risk settings</button>
         <div class="note" id="riskNote"></div>
       </div>
+    </section>
+
+    <section class="sect">
+      <div class="secthd">
+        <h2>Open positions</h2>
+        <p class="sub">Read from Bybit every ~10 seconds. The SL and TP shown are the live ones on
+           the exchange, not the ones set above.</p>
+      </div>
 
       <div class="card">
-        <h2>Allowed pairs</h2>
-        <div id="pairList"></div>
-        <div class="addbar">
-          <input type="text" id="pairInput" list="pairSuggest" placeholder="e.g. ETHUSDT or 1000PEPEUSDT" autocomplete="off">
-          <datalist id="pairSuggest"></datalist>
-          <button id="addPairBtn">Add</button>
+        <div class="kv">
+          <span class="muted">Wallet balance</span><span class="mono" id="wallet">—</span>
         </div>
-        <p class="hint" style="margin-top:10px">TradingView alerts trade whatever <b>allowed</b> pair they
-           name. Remove a pair here and the bot will reject alerts for it (existing positions are not touched).
-           Give each pair its own <b>name</b> and <b>qty</b>, then copy that pair's alert.</p>
-        <div class="kv" style="margin-top:8px">
+        <table>
+          <thead><tr><th>Pair</th><th>Side</th><th>Size</th><th>Entry</th><th>Last</th>
+                  <th>SL</th><th>TP</th><th>PnL $</th><th>PnL %</th><th></th></tr></thead>
+          <tbody id="posRows"></tbody>
+        </table>
+        <p class="hint" id="liveHint"></p>
+      </div>
+    </section>
+
+    <section class="sect">
+      <div class="secthd">
+        <h2>Your trades</h2>
+        <p class="sub">Every trade below runs on the one bot above. Give each one a name and a
+           qty, then copy its alert into TradingView.</p>
+      </div>
+
+      <div class="card">
+        <div id="pairList"></div>
+
+        <button class="primary" id="newTradeBtn">+ Start a new trade</button>
+
+        <div id="newTradeForm" class="newtrade hidden">
+          <div class="row">
+            <div class="field">
+              <label>Pair</label>
+              <input type="text" id="ntSymbol" list="pairSuggest" autocomplete="off"
+                     placeholder="e.g. ETHUSDT or 1000PEPEUSDT">
+            </div>
+            <div class="field">
+              <label>Name</label>
+              <input type="text" id="ntLabel" maxlength="20" autocomplete="off" placeholder="eth-swing">
+            </div>
+            <div class="field">
+              <label>Qty (base units)</label>
+              <input type="number" id="ntQty" step="any" min="0" placeholder="e.g. 1.5">
+            </div>
+          </div>
+          <datalist id="pairSuggest"></datalist>
+          <p class="hint">The <b>name</b> identifies this trade on Bybit and in the logs. The
+             <b>qty</b> is what an alert that omits <span class="k">qty</span> will trade — without
+             one it auto-sizes from the whole wallet, which two trades cannot share.</p>
+          <div class="error" id="ntErr"></div>
+          <div class="ntacts">
+            <button id="ntAdd">Add this trade</button>
+            <button class="ghost" id="ntCancel">Cancel</button>
+          </div>
+        </div>
+
+        <div class="kv" style="margin-top:12px">
           <span class="muted">Settings file</span><span class="mono" id="persistPath">in-memory</span>
         </div>
       </div>
-    </div>
-
-    <div class="card">
-      <h2>Live status — USDT wallet &amp; positions</h2>
-      <div class="kv">
-        <span class="muted">Wallet balance</span><span class="mono" id="wallet">—</span>
-      </div>
-      <table>
-        <thead><tr><th>Pair</th><th>Side</th><th>Size</th><th>Entry</th><th>Last</th>
-                <th>SL</th><th>TP</th><th>PnL $</th><th>PnL %</th><th></th></tr></thead>
-        <tbody id="posRows"></tbody>
-      </table>
-      <p class="hint" id="liveHint"></p>
-    </div>
+    </section>
   </div>
 </div>
 
@@ -307,7 +358,7 @@ function renderPairs(s) {
   const meta = s.pair_meta || {};
   const list = $("pairList");
   if (!s.allowed_symbols.length) {
-    list.innerHTML = '<p class="muted">No pairs allowed — add one below.</p>';
+    list.innerHTML = '<p class="muted">No trades yet — start one below.</p>';
     return;
   }
   const pct = Math.round((s.margin_percent || 0) * 100);
@@ -576,7 +627,13 @@ async function postConfig(patch, okMsg) {
                  live_error: state.data.live_error, wallet_balance: state.data.wallet_balance,
                  positions: state.data.positions });
     toast(okMsg);
-  } catch (e) { if (e.message !== "auth") { toast(e.message, true); refresh(); } }
+    return true;
+  } catch (e) {
+    // false, not undefined, so a caller can tell a saved change from a rejected
+    // one and keep the user's input on screen instead of clearing the form.
+    if (e.message !== "auth") { toast(e.message, true); refresh(); }
+    return false;
+  }
 }
 async function changePairs(add, remove) {
   await postConfig({ pairs_add: add, pairs_remove: remove },
@@ -611,16 +668,59 @@ $("saveRiskBtn").onclick = async () => {
   await postConfig(patch, "Risk settings saved — next entry uses them");
 };
 
-$("addPairBtn").onclick = addPair;
-$("pairInput").addEventListener("keydown", e => { if (e.key === "Enter") addPair(); });
-async function addPair() {
-  const raw = $("pairInput").value.trim().toUpperCase().replace(/\.P$/, "");
-  if (!raw) return;
-  $("pairInput").value = "";
-  await changePairs([raw], []);
+/* ---------- start a new trade ---------- */
+// A guided step rather than an inline "add": the pair, its name and its qty are
+// collected together and sent in ONE request, so a trade can never end up on the
+// bot without the qty that was typed for it. The server applies pairs_add before
+// pair_meta, which is what makes that order work.
+const LABEL_RE = /^[a-z0-9][a-z0-9_-]{0,19}$/;
+
+function showNewTrade(open) {
+  $("newTradeForm").classList.toggle("hidden", !open);
+  $("newTradeBtn").classList.toggle("hidden", open);
+  if (open) { $("ntErr").textContent = ""; $("ntSymbol").focus(); }
 }
-$("pairInput").addEventListener("input", async () => {
-  const q = $("pairInput").value.trim();
+function clearNewTrade() {
+  $("ntSymbol").value = "";
+  $("ntLabel").value = "";
+  $("ntQty").value = "";
+  $("ntErr").textContent = "";
+}
+// A rejected form keeps what was typed — re-entering a symbol because the name
+// was one character too long would be its own small insult.
+function ntError(msg) { $("ntErr").textContent = msg; return false; }
+
+async function addNewTrade() {
+  const sym = $("ntSymbol").value.trim().toUpperCase().replace(/\.P$/, "");
+  const label = $("ntLabel").value.trim().toLowerCase();
+  const qtyRaw = $("ntQty").value.trim();
+
+  if (!sym) return ntError("Enter a pair, for example ETHUSDT.");
+  if ((state.data.allowed_symbols || []).includes(sym))
+    return ntError(`${sym} is already one of your trades.`);
+  if (label && !LABEL_RE.test(label))
+    return ntError("A name is 1–20 characters of a–z, 0–9, - or _ (e.g. eth-swing).");
+  // "" means "no qty saved, auto-size"; a typed value must be a real number.
+  const qty = qtyRaw === "" ? null : Number(qtyRaw);
+  if (qty !== null && !(qty > 0)) return ntError("Qty must be a number greater than 0.");
+
+  const patch = { pairs_add: [sym] };
+  if (label || qty !== null) patch.pair_meta = { [sym]: { label: label || null, qty } };
+
+  if (!await postConfig(patch, `${sym} added`)) return;   // the reason is already toasted
+  clearNewTrade();
+  showNewTrade(false);
+  // Lead straight on to the new trade's alert — the thing the user came here for.
+  showAlert(sym);
+}
+
+$("newTradeBtn").onclick = () => showNewTrade(true);
+$("ntCancel").onclick = () => { clearNewTrade(); showNewTrade(false); };
+$("ntAdd").onclick = addNewTrade;
+["ntSymbol", "ntLabel", "ntQty"].forEach(id =>
+  $(id).addEventListener("keydown", e => { if (e.key === "Enter") addNewTrade(); }));
+$("ntSymbol").addEventListener("input", async () => {
+  const q = $("ntSymbol").value.trim();
   if (!q) return;
   try {
     const r = await api("/api/dashboard/pairs?q=" + encodeURIComponent(q) + "&limit=10");

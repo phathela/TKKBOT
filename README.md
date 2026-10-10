@@ -40,20 +40,26 @@ that matches the current direction is a hold (never doubles up). TP/SL are attac
 ## Dashboard (web control panel)
 
 Open `https://<project>.up.railway.app/dashboard` and sign in with `DASHBOARD_PASSWORD`
-(or `WEBHOOK_SECRET` if that is unset). From there you can, live, without redeploying:
+(or `WEBHOOK_SECRET` if that is unset). The page reads top-down in three sections — what is
+running, what is open, then what to add:
 
-- **Trading on/off** kill switch (same effect as `TRADING_ENABLED`).
-- **Leverage** — any value from 1 up to `MAX_LEVERAGE` (raise that env var to go above 5x).
-- **Margin %** — fraction of wallet balance used per trade (auto-sizing).
-- **Stop-loss distance %** and an optional **take-profit distance %** (0 = no TP).
-- **Allowed pairs** — search the real Bybit perpetual list (e.g. `ETHUSDT`, `1000PEPEUSDT`)
-  and add/remove them. Alerts trade whichever allowed pair they name. Each pair also gets a
-  **name** and a saved **qty**, and its own **Alert** button (see *Trading several pairs*).
-- **Live status** — USDT wallet balance and every open position per allowed pair: side,
+- **Bot now trading** — the settings that apply to every trade the bot opens, live and without
+  a redeploy:
+  - **Trading on/off** kill switch (same effect as `TRADING_ENABLED`).
+  - **Leverage** — any value from 1 up to `MAX_LEVERAGE` (raise that env var to go above 5x).
+  - **Margin %** — fraction of wallet balance used per trade (auto-sizing).
+  - **Stop-loss distance %** and an optional **take-profit distance %** (0 = no TP).
+
+  A change takes effect on the **next entry**, never on a position that is already open.
+- **Open positions** — USDT wallet balance and every open position per allowed pair: side,
   size, entry, live mark price, the **real SL/TP read from Bybit's open stop-orders**
   (TKKBOT attaches these order-level, so they do not appear on the position row), live PnL in
   dollars and as a % of the position margin, plus a per-pair **Close** button (reduce-only).
-  The panel auto-refreshes every ~10 seconds.
+  The panel auto-refreshes every ~10 seconds; the SL/TP shown here are the exchange's, not the
+  ones set above.
+- **Your trades** — one row per trade the bot will take, each with its **name**, its saved
+  **qty**, and an **Alert** button. **+ Start a new trade** collects the pair, name and qty in
+  one step, then shows that trade's copy-paste alert (see *Trading several pairs*).
 
 ### Trading several pairs
 
@@ -61,11 +67,13 @@ Auto-sizing commits `MARGIN_USAGE_PERCENT` (90% by default) of the **whole** wal
 alert, so two pairs drawing on one balance cannot both open — the second is rejected by Bybit
 for insufficient margin. Give each pair its own **qty** instead:
 
-1. Add the pair, type a **Name** (`btc-scalp`) and a **Qty** in base units, and **Save**.
-2. Click **Alert** on that pair. It shows the webhook URL and the exact JSON body to paste
-   into a TradingView alert, with **Copy** buttons for each.
+1. Under **Your trades**, click **+ Start a new trade** and fill in the pair (e.g. `ETHUSDT`),
+   a **Name** (`eth-swing`) and a **Qty** in base units.
+2. The pair, its name and its qty are saved in **one** step, and that trade's alert opens
+   straight away: the webhook URL and the exact JSON body to paste into a TradingView alert,
+   each with a **Copy** button.
 3. Repeat per pair. Every pair keeps its own name and qty, and all of them trade through the
-   same bot.
+   same bot. To change a name or qty later, edit it in the pair's row and **Save**.
 
 Sizing for an entry resolves in this order: the alert's own `qty`, else that pair's saved
 qty, else auto-size. The saved qty therefore only applies to an alert that omits `qty` — and
