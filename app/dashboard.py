@@ -64,7 +64,15 @@ def create_dashboard_router(
     def page():
         if not _HTML.exists():
             raise HTTPException(status_code=404, detail="dashboard page missing")
-        return FileResponse(str(_HTML), media_type="text/html")
+        # Revalidate on every load. FileResponse sends an etag and a last-modified
+        # but no Cache-Control, and given only those two a browser applies
+        # *heuristic* freshness — about 10% of the file's age — so after a deploy
+        # it will keep serving its cached copy for hours without ever asking the
+        # server. That is how a shipped change still shows the old page.
+        # "no-cache" (not "no-store") still permits a 304, so a normal load stays
+        # a cheap round trip rather than a re-download of the whole file.
+        return FileResponse(str(_HTML), media_type="text/html",
+                            headers={"Cache-Control": "no-cache"})
 
     @router.post("/dashboard/login")
     def login(request: Request, payload: dict = Body(...)):

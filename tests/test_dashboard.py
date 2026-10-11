@@ -61,6 +61,20 @@ def test_dashboard_page_served(tmp_path):
     assert "tradingTrack" in resp.text
 
 
+def test_dashboard_page_is_not_heuristically_cached(tmp_path):
+    """Without this header a browser keeps its old copy for hours after a deploy.
+
+    An etag and a last-modified alone leave the browser free to reuse a cached
+    copy without asking, so a shipped change looks like it never arrived — which
+    is exactly how a new dashboard section failed to appear in production.
+    """
+    tc, _ = build_app(tmp_path / "cfg.json")
+    resp = tc.get("/dashboard")
+    assert resp.headers.get("cache-control") == "no-cache"
+    # Still cacheable-with-revalidation, not uncacheable: a 304 must stay possible.
+    assert resp.headers.get("etag")
+
+
 def test_state_requires_login(tmp_path):
     tc, _ = build_app(tmp_path / "cfg.json")
     assert tc.get("/api/dashboard/state").status_code == 401
