@@ -75,6 +75,11 @@ for insufficient margin. Give each pair its own **qty** instead:
 3. Repeat per pair. Every pair keeps its own name and qty, and all of them trade through the
    same bot. To change a name or qty later, edit it in the pair's row and **Save**.
 
+**+ Start a new trade** is for a pair the bot does not have yet. Typing a pair that is already
+listed is refused — including the seed pair from `ALLOWED_SYMBOLS`, which is listed before you
+have added anything — so name and size it in its existing row instead, and use that row's
+**Alert** button for its copy-paste webhook.
+
 Sizing for an entry resolves in this order: the alert's own `qty`, else that pair's saved
 qty, else auto-size. The saved qty therefore only applies to an alert that omits `qty` — and
 never to `side: "close"`, which always closes the whole position.

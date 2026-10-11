@@ -696,8 +696,13 @@ async function addNewTrade() {
   const qtyRaw = $("ntQty").value.trim();
 
   if (!sym) return ntError("Enter a pair, for example ETHUSDT.");
+  // Already-listed pairs are the common case, not an edge one: a fresh bot seeds
+  // its allowlist from ALLOWED_SYMBOLS, so its first pair is "already a trade"
+  // before the user has done anything. Say where to go instead of just saying no.
   if ((state.data.allowed_symbols || []).includes(sym))
-    return ntError(`${sym} is already one of your trades.`);
+    return ntError(`${sym} is already one of your trades — it is in the list below. `
+      + `Edit its name and qty in its row, or press its Alert button for the `
+      + `copy-paste alert. This form is only for adding another pair.`);
   if (label && !LABEL_RE.test(label))
     return ntError("A name is 1–20 characters of a–z, 0–9, - or _ (e.g. eth-swing).");
   // "" means "no qty saved, auto-size"; a typed value must be a real number.
