@@ -40,8 +40,8 @@ that matches the current direction is a hold (never doubles up). TP/SL are attac
 ## Dashboard (web control panel)
 
 Open `https://<project>.up.railway.app/dashboard` and sign in with `DASHBOARD_PASSWORD`
-(or `WEBHOOK_SECRET` if that is unset). The page reads top-down in three sections — what is
-running, what is open, then what to add:
+(or `WEBHOOK_SECRET` if that is unset). The page reads top-down in four sections — what is
+running, what is open, what was scanned, then what to add:
 
 - **Bot now trading** — the settings that apply to every trade the bot opens, live and without
   a redeploy:
@@ -57,6 +57,13 @@ running, what is open, then what to add:
   dollars and as a % of the position margin, plus a per-pair **Close** button (reduce-only).
   The panel auto-refreshes every ~10 seconds; the SL/TP shown here are the exchange's, not the
   ones set above.
+- **Market scan — informational only** — the latest scan's Top 10 (5 crypto + 5 tech stocks)
+  with price, volatility, direction bias, confidence, suggested entry/stop/target, horizon,
+  thesis and key risks; a **NEW** tag on symbols that were not in the previous run; the source
+  funnel, which sources failed, the CoinGecko/CMC disagreements, earlier runs today, and when
+  the next scan is due. It is fed by `GET /api/dashboard/opportunities` (session cookie, not
+  the scanner's `X-API-Key`, so the key never reaches the browser), refreshes every 60 s, and
+  is strictly read-only: **nothing on this page can place a trade from a scan.**
 - **Your trades** — one row per trade the bot will take, each with its **name**, its saved
   **qty**, and an **Alert** button. **+ Start a new trade** collects the pair, name and qty in
   one step, then shows that trade's copy-paste alert (see *Trading several pairs*).
@@ -152,6 +159,10 @@ All three need `X-API-Key: $OPPORTUNITIES_API_KEY`; when that variable is empty 
 | `GET /opportunities/history?days=7` | stored scans inside the window |
 | `POST /opportunities/scan` | start a scan now; returns **202** immediately (a run takes minutes), poll `/latest` for the result |
 
+The same data is on the dashboard, under **Market scan — informational only**, via the
+session-authenticated `GET /api/dashboard/opportunities` — that route exists so the browser
+never has to hold `OPPORTUNITIES_API_KEY`. It is read-only; it cannot start a scan.
+
 ```bash
 curl -H "X-API-Key: $OPPORTUNITIES_API_KEY" \
   https://<project>.up.railway.app/opportunities/latest
@@ -200,10 +211,11 @@ app/
   safety.py           Guardrails + duplicate-alert cooldown
   bybit_client.py     Bybit V5 REST wrapper (pybit)
   runtime_config.py   Dashboard-tunable settings, persisted to a file (Railway volume)
-  dashboard.py        /dashboard page + /api/dashboard/* (login, state, config, pairs, close)
+  dashboard.py        /dashboard page + /api/dashboard/* (login, state, config, pairs,
+                      close, alert-template, opportunities)
   static/dashboard.html  Self-contained dashboard front-end (no build step)
 scanner/              Informational market scanner: providers, scoring, LLM, storage, API
-tests/                pytest suite (344 tests)
+tests/                pytest suite (357 tests)
 Procfile           web: uvicorn app.main:app --port $PORT
 runtime.txt        Python 3.12
 railway.json       Railway deploy config (healthcheck on /health)
@@ -321,7 +333,7 @@ curl -X POST http://localhost:8000/webhook/tradingview ^
   -d "{\"secret\":\"YOUR_SECRET\",\"symbol\":\"BTCUSDT\",\"side\":\"buy\",\"qty\":0.001,\"leverage\":5}"
 ```
 
-Run tests: `pytest -q` (344 tests, no real API calls).
+Run tests: `pytest -q` (357 tests, no real API calls).
 
 ## 6. Going live — checklist
 

@@ -14,6 +14,7 @@ from .logger import setup_logging
 from .runtime_config import RuntimeConfig
 from .safety import Cooldown, SafetyError
 from scanner.api import create_opportunities_router
+from scanner.config import ScanSettings
 from scanner.scheduler import start_if_enabled
 
 logger = logging.getLogger(__name__)
@@ -23,6 +24,7 @@ def create_app(
     settings: Settings | None = None,
     client: BybitClient | None = None,
     runtime: RuntimeConfig | None = None,
+    scan_settings: ScanSettings | None = None,
 ) -> FastAPI:
     """Application factory. ``client``/``runtime`` are injectable so tests can mock them."""
     settings = settings or get_settings()
@@ -64,7 +66,9 @@ def create_app(
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
 
-    app.include_router(create_dashboard_router(settings, client, runtime))
+    app.include_router(
+        create_dashboard_router(settings, client, runtime, scan_settings=scan_settings)
+    )
     # Market scanner: read-only, informational, and entirely outside the
     # trading path. Keyed separately (X-API-Key) from the dashboard.
     app.include_router(create_opportunities_router())

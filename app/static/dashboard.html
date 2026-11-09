@@ -110,6 +110,28 @@
   .kv{display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px dashed var(--panel2)}
   .kv:last-child{border-bottom:none}
 
+  /* market scan — one block per ranked symbol */
+  .scanmeta{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px}
+  .scanrow{padding:10px 0;border-bottom:1px solid var(--panel2)}
+  .scanrow:last-child{border-bottom:none;padding-bottom:0}
+  .scanrow .top{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
+  .scanrow .rk{min-width:18px;color:var(--muted);font-variant-numeric:tabular-nums}
+  .scanrow .sym2{font-weight:700;font-size:15px}
+  .scanrow .tag{font-size:10px;letter-spacing:.05em;text-transform:uppercase;color:var(--muted);
+                border:1px solid var(--border);border-radius:999px;padding:1px 7px}
+  .scanrow .tag.new{color:var(--accent);border-color:var(--accent)}
+  .scanrow .px{margin-left:auto;font-weight:600;font-variant-numeric:tabular-nums}
+  .scanrow .bias{font-size:12px;font-weight:700}
+  .scanrow .bias.bull{color:var(--buy)} .scanrow .bias.bear{color:var(--sell)}
+  .scanrow .conf{font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}
+  .scanrow .levels{font-size:12px;color:var(--muted);margin-top:4px}
+  .scanrow .th{font-size:12.5px;margin-top:6px}
+  .scanrow details{margin-top:6px;font-size:12px;color:var(--muted)}
+  .scanrow summary{cursor:pointer}
+  .scanrow ul{margin:4px 0 0 16px;padding:0}
+  .scanhist{font-size:12px;color:var(--muted);margin-top:10px}
+  .scanhist .sep{opacity:.5;margin:0 6px}
+
   /* login */
   #login{max-width:360px;margin:12vh auto 0}
   #login h1{text-align:center;margin-bottom:20px}
@@ -216,6 +238,21 @@
 
     <section class="sect">
       <div class="secthd">
+        <h2>Market scan — informational only</h2>
+        <p class="sub">Four ranked scans a day from CoinGecko, CoinMarketCap, Bybit,
+           Twelve Data and DeepSeek. This bot never trades from these picks.</p>
+      </div>
+
+      <div class="card">
+        <div class="scanmeta" id="scanMeta"></div>
+        <div id="scanRows"></div>
+        <div id="scanExtras"></div>
+        <p class="hint" id="scanHint"></p>
+      </div>
+    </section>
+
+    <section class="sect">
+      <div class="secthd">
         <h2>Your trades</h2>
         <p class="sub">Every trade below runs on the one bot above. Give each one a name and a
            qty, then copy its alert into TradingView.</p>
@@ -294,6 +331,7 @@ function toast(msg, isErr = false) {
 /* ---------- views ---------- */
 function showLogin() {
   stopLiveRefresh();
+  stopScanRefresh();
   $("login").classList.remove("hidden");
   $("app").classList.add("hidden");
 }
@@ -304,6 +342,8 @@ function showApp(reload = true) {
   $("app").classList.remove("hidden");
   if (reload) refresh();
   startLiveRefresh();
+  refreshScan();
+  startScanRefresh();
 }
 
 /* ---------- state rendering ---------- */
@@ -539,6 +579,171 @@ function pnlCls(v) {
   return n > 0 ? " up" : (n < 0 ? " down" : "");
 }
 
+/* ---------- market scan (informational) ---------- */
+// Its own cadence rather than the 10 s state poll: four scans a day do not need
+// that traffic, and each payload carries ten theses.
+const SCAN_INTERVAL_MS = 60000;
+let scanTimer = null, scanFetching = false;
+
+function fmtScanPrice(v) {
+  if (v === null || v === undefined) return "—";
+  const n = Number(v);
+  const dp = n >= 1000 ? 2 : (n >= 1 ? 4 : 6);
+  return "$" + n.toLocaleString("en-US", { maximumFractionDigits: dp });
+}
+function fmtClock(iso) {
+  const t = Date.parse(iso);
+  if (isNaN(t)) return "—";
+  return new Date(t).toISOString().slice(11, 16) + " UTC";
+}
+function fmtAgo(iso) {
+  const t = Date.parse(iso);
+  if (isNaN(t)) return "";
+  const mins = Math.round((Date.now() - t) / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return mins + " min ago";
+  const hours = Math.round(mins / 60);
+  if (hours < 24) return hours + "h ago";
+  return Math.round(hours / 24) + "d ago";
+}
+function fmtUntil(iso) {
+  const t = Date.parse(iso);
+  if (isNaN(t)) return "";
+  const mins = Math.round((t - Date.now()) / 60000);
+  if (mins <= 0) return "due now";
+  if (mins < 60) return "in " + mins + " min";
+  const hours = Math.floor(mins / 60), rest = mins % 60;
+  return "in " + hours + "h" + (rest ? " " + rest + "m" : "");
+}
+
+function renderScan(s) {
+  const latest = s.latest;
+  const meta = [];
+
+  // 1. What the scanner's own state is.
+  if (s.storage_error)
+    meta.push(`<span class="pill" style="color:var(--bad);border-color:var(--bad)">storage error</span>`);
+  else if (!s.configured)
+    meta.push(`<span class="pill" style="color:var(--warn);border-color:var(--warn)">not configured</span>`);
+  else
+    meta.push(`<span class="pill${latest ? " ok" : ""}">${latest ? "ready" : "waiting for first scan"}</span>`);
+
+  if (latest && !latest.dry_run)
+    meta.push(`<span class="pill">scanned ${esc(fmtClock(latest.created_at))}</span>`);
+  if (latest && latest.dry_run)
+    meta.push(`<span class="pill">dry run — sample data</span>`);
+  if (s.scan_running)
+    meta.push(`<span class="pill ok">scan running now</span>`);
+
+  // 2. When the next one is due.
+  if (s.config_error)
+    meta.push(`<span class="pill" style="color:var(--bad);border-color:var(--bad)">bad schedule</span>`);
+  else if (s.scheduler_enabled && s.next_run)
+    meta.push(`<span class="pill">next ${esc(fmtClock(s.next_run))} · ${esc(fmtUntil(s.next_run))}</span>`);
+  else if (s.scan_times_utc.length)
+    meta.push(`<span class="pill">scheduler off · ${esc(s.scan_times_utc.join(", "))} UTC</span>`);
+
+  $("scanMeta").innerHTML = meta.join("");
+
+  const hint = [];
+  if (latest && latest.llm_fallback)
+    hint.push("The AI ranking was unavailable for this run, so the deterministic fallback was used"
+      + (latest.llm_error ? ` (${latest.llm_error})` : "") + ".");
+  hint.push("Picks and levels are the scan's own analysis — not financial advice. The bot never trades from them.");
+
+  if (!latest) {
+    $("scanRows").innerHTML = "";
+    $("scanExtras").innerHTML = "";
+    $("scanHint").textContent = s.storage_error
+      ? "The scan store could not be read: " + s.storage_error
+      : (s.configured
+          ? "No scan has run yet."
+          : "Add the missing keys in Railway to start scanning: " + s.missing.join(", "));
+    return;
+  }
+
+  const newSet = new Set(latest.new_symbols || []);
+  const items = latest.items || [];
+  $("scanRows").innerHTML = items.map(it => {
+    const bull = it.direction_bias === "bullish";
+    const vol = it.volatility_pct === null || it.volatility_pct === undefined
+      ? "vol —" : "vol " + Number(it.volatility_pct).toFixed(1) + "%";
+    const levels = [
+      it.suggested_entry_zone ? "entry " + it.suggested_entry_zone : null,
+      it.suggested_stop !== null && it.suggested_stop !== undefined
+        ? "stop " + fmtScanPrice(it.suggested_stop) : null,
+      it.suggested_target !== null && it.suggested_target !== undefined
+        ? "target " + fmtScanPrice(it.suggested_target) : null,
+      it.time_horizon || null,
+    ].filter(Boolean).join(" · ");
+    const risks = (it.key_risks && it.key_risks.length)
+      ? `<details><summary>${it.key_risks.length} risk${it.key_risks.length === 1 ? "" : "s"}</summary>
+           <ul>${it.key_risks.map(r => `<li>${esc(r)}</li>`).join("")}</ul></details>`
+      : "";
+    return `<div class="scanrow">
+      <div class="top">
+        <span class="rk mono">${it.rank}</span>
+        <span class="sym2">${esc(it.symbol)}</span>
+        <span class="tag">${esc(it.asset_type)}</span>
+        ${newSet.has(it.symbol) ? '<span class="tag new">new</span>' : ""}
+        <span class="bias ${bull ? "bull" : "bear"}">${bull ? "BULL" : "BEAR"}</span>
+        <span class="conf mono">conf ${it.confidence} · ${vol}</span>
+        <span class="px mono">${fmtScanPrice(it.price)}</span>
+      </div>
+      ${levels ? `<div class="levels mono">${esc(levels)}</div>` : ""}
+      <div class="th">${esc(it.thesis)}</div>
+      ${risks}
+    </div>`;
+  }).join("");
+
+  const extras = [];
+  const c = latest.candidates_considered || {};
+  const funnel = [];
+  if (c.crypto_markets) funnel.push(c.crypto_markets + " crypto markets → " + c.crypto_selected + " screened");
+  if (c.stocks_quoted) funnel.push(c.stocks_quoted + " stocks quoted → " + c.stocks_selected + " screened");
+  if (c.shortlist) funnel.push(c.shortlist + " shortlisted for the AI");
+  if (funnel.length)
+    extras.push(`<p class="hint" style="margin-top:10px">${esc(funnel.join(" · "))}</p>`);
+  if (latest.sources_used && latest.sources_used.length)
+    extras.push(`<p class="hint">Sources used: ${esc(latest.sources_used.join(", "))}</p>`);
+  if (latest.sources_failed && latest.sources_failed.length)
+    extras.push(`<p class="hint err">Sources failed: ${esc(
+      latest.sources_failed.map(f => f.name + (f.detail ? " (" + f.detail + ")" : "")).join("; "))}</p>`);
+  if (latest.discrepancies && latest.discrepancies.length)
+    extras.push(`<details class="scanhist"><summary>${latest.discrepancies.length} CoinGecko/CMC disagreements</summary>
+      <ul>${latest.discrepancies.map(d => `<li>${esc(d)}</li>`).join("")}</ul></details>`);
+
+  const earlier = (s.history || []).filter(r => r.run_id !== latest.run_id);
+  if (earlier.length) {
+    extras.push(`<p class="scanhist">Earlier today:
+      ${earlier.map(r => esc(fmtClock(r.created_at)) + " · " + r.pick_count + " picks"
+        + (r.llm_fallback ? " · fallback" : "") + (r.top ? " · top " + esc(r.top) : ""))
+        .join('<span class="sep">|</span>')}</p>`);
+  }
+  $("scanExtras").innerHTML = extras.join("");
+  $("scanHint").textContent = hint.join(" ");
+}
+
+async function refreshScan() {
+  if (scanFetching) return;
+  scanFetching = true;
+  try {
+    renderScan(await api("/api/dashboard/opportunities"));
+  } catch (e) {
+    if (e.message === "auth") { stopScanRefresh(); showLogin(); return; }
+    $("scanHint").textContent = "Could not load the scan: " + describeErr(e);
+  } finally {
+    scanFetching = false;
+  }
+}
+function startScanRefresh() {
+  if (scanTimer) return;
+  scanTimer = setInterval(refreshScan, SCAN_INTERVAL_MS);
+}
+function stopScanRefresh() {
+  if (scanTimer) { clearInterval(scanTimer); scanTimer = null; }
+}
+
 /* ---------- actions ---------- */
 // Auto-refresh keeps the live block (wallet, banners, position rows, hint)
 // current, every ~10 s, without touching the risk fields — so a setting the user
@@ -652,7 +857,7 @@ $("loginBtn").onclick = async () => {
 };
 $("pwd").addEventListener("keydown", e => { if (e.key === "Enter") $("loginBtn").click(); });
 $("logoutBtn").onclick = async () => { try { await api("/dashboard/logout", {method:"POST", body:"{}"}); } catch(e){} location.reload(); };
-$("refreshBtn").onclick = () => refresh();
+$("refreshBtn").onclick = () => { refresh(); refreshScan(); };
 
 $("tradingTrack").onclick = async () => {
   const next = !state.data.trading_enabled;

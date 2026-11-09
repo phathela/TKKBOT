@@ -16,6 +16,9 @@ from pathlib import Path
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response
 from fastapi.responses import FileResponse, JSONResponse
 
+from scanner.config import ScanSettings
+from scanner.dashboard_view import ScanDashboard
+
 from .bybit_client import BybitClient, BybitError
 from .config import Settings
 from .runtime_config import ConfigError, RuntimeConfig
@@ -50,10 +53,16 @@ def _valid_session(secret: str, value: str) -> bool:
 
 
 def create_dashboard_router(
-    settings: Settings, client: BybitClient, runtime: RuntimeConfig
+    settings: Settings,
+    client: BybitClient,
+    runtime: RuntimeConfig,
+    scan_settings: ScanSettings | None = None,
 ) -> APIRouter:
     secret = settings.dashboard_password or settings.webhook_secret
     router = APIRouter()
+    # Read-only view of the market scanner. Its own routes need X-API-Key; this
+    # one rides the session cookie so the browser never holds that key.
+    scans = ScanDashboard(scan_settings)
 
     def require_session(request: Request) -> None:
         value = request.cookies.get(_COOKIE)
@@ -126,6 +135,17 @@ def create_dashboard_router(
             logger.exception("Dashboard state: live reads failed")
             payload["live_error"] = f"{type(e).__name__}: {e}"
         return payload
+
+    @router.get("/api/dashboard/opportunities", dependencies=[Depends(require_session)])
+    def opportunities():
+        """The latest market scan, read-only and informational.
+
+        Fetched on its own cadence (not the 10 s state poll): four scans a day
+        do not need that traffic, and the payload is much larger than the
+        trading state. It is deliberately separate from ``/state`` for the same
+        reason ``alert-template`` is — that poll runs every 10 s.
+        """
+        return scans.snapshot()
 
     @router.post("/api/dashboard/config", dependencies=[Depends(require_session)])
     def update_config(payload: dict = Body(...)):
