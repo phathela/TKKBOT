@@ -119,16 +119,17 @@ class Scanner:
         stock_candidates = scoring.build_stock_candidates(stock_selected)
 
         weights = scoring.load_weights(self.settings.scoring_weights_file())
-        crypto_ranked = scoring.score_candidates(
-            crypto_candidates, weights
-        )[: self.settings.crypto_candidate_limit]
-        stock_ranked = scoring.score_candidates(
-            stock_candidates, weights
-        )[: self.settings.stock_candidate_limit]
+        crypto_scored = scoring.score_candidates(crypto_candidates, weights)
+        stock_scored = scoring.score_candidates(stock_candidates, weights)
+        crypto_ranked = crypto_scored[: self.settings.crypto_candidate_limit]
+        stock_ranked = stock_scored[: self.settings.stock_candidate_limit]
 
         shortlist: list[Candidate] = sorted(
             crypto_ranked + stock_ranked, key=lambda c: (-c.score, c.symbol)
         )
+        # BTC is analysed on every run even when its own momentum keeps it out
+        # of the shortlist: the dashboard pins it as the market anchor.
+        shortlist = _with_anchor(shortlist, crypto_scored)
         headlines = self._headlines(shortlist, failed, used)
 
         # A dead source must not stop the scan: ask for as many items as there
@@ -157,6 +158,7 @@ class Scanner:
             llm_fallback=analysis.fallback,
             llm_error=analysis.error,
             items=analysis.items,
+            anchor=analysis.anchor,
             sources_used=used,
             sources_failed=failed,
             discrepancies=discrepancies,
@@ -386,15 +388,18 @@ class Scanner:
             quotes, min_average_volume=self.settings.min_stock_avg_volume
         )
         weights = scoring.load_weights(self.settings.scoring_weights_file())
-        crypto_ranked = scoring.score_candidates(
+        crypto_scored = scoring.score_candidates(
             scoring.build_crypto_candidates(crypto_selected), weights
-        )[: self.settings.crypto_candidate_limit]
-        stock_ranked = scoring.score_candidates(
+        )
+        stock_scored = scoring.score_candidates(
             scoring.build_stock_candidates(stock_selected), weights
-        )[: self.settings.stock_candidate_limit]
+        )
+        crypto_ranked = crypto_scored[: self.settings.crypto_candidate_limit]
+        stock_ranked = stock_scored[: self.settings.stock_candidate_limit]
         shortlist = sorted(
             crypto_ranked + stock_ranked, key=lambda c: (-c.score, c.symbol)
         )
+        shortlist = _with_anchor(shortlist, crypto_scored)
         items = llm.deterministic_items(
             shortlist, self.settings.final_crypto, self.settings.final_stocks
         )
@@ -408,6 +413,7 @@ class Scanner:
             llm_fallback=True,
             llm_error="dry run: LLM not called",
             items=items,
+            anchor=llm.anchor_item(shortlist),
             sources_used=["sample_data"],
             candidates_considered={
                 "crypto_selected": len(crypto_selected),
@@ -425,6 +431,26 @@ class Scanner:
                 retries=self.settings.scan_http_retries,
             )
         return self._http
+
+
+def _with_anchor(
+    shortlist: list[Candidate], scored: list[Candidate]
+) -> list[Candidate]:
+    """Put BTC on the shortlist unless it is already there.
+
+    Its low volatility rarely clears the momentum cut, but the scan analyses it
+    regardless: the whole market moves with BTC, and the dashboard pins it.
+    """
+    if any(
+        c.asset_type == "crypto" and c.symbol == llm.ANCHOR_SYMBOL for c in shortlist
+    ):
+        return shortlist
+    for candidate in scored:
+        if candidate.asset_type == "crypto" and candidate.symbol == llm.ANCHOR_SYMBOL:
+            return shortlist + [candidate]
+    logger.info("No %s candidate this run; the daily anchor is unavailable",
+                llm.ANCHOR_SYMBOL)
+    return shortlist
 
 
 def _apply_bybit_ticker(candidate: Candidate, row: dict) -> None:

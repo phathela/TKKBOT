@@ -15,9 +15,13 @@ from dataclasses import dataclass
 from pydantic import ValidationError
 
 from .providers.base import HttpClient, ProviderError
-from .schemas import Candidate, Headline, LLMResponse, RankedItem
+from .schemas import AnchorItem, AssetAnalysis, Candidate, Headline, LLMResponse, RankedItem
 
 logger = logging.getLogger(__name__)
+
+# The market anchor: analysed on every run, ranked or not, because the whole
+# market moves with it and the dashboard always shows it.
+ANCHOR_SYMBOL = "BTC"
 
 # Relative/absolute tolerances for "does this number contradict the data?".
 VOLATILITY_RELATIVE_TOLERANCE = 0.25
@@ -54,12 +58,19 @@ OUTPUT SHAPE
    "time_horizon": "e.g. 1-3 days"}
 ]}
 Return exactly the requested number of crypto and stock items, ranked 1..N with
-no gaps and no duplicates."""
+no gaps and no duplicates.
+
+ANCHOR
+Also return "anchor": the same shape for BTC, minus "rank" (add "rank" only if
+BTC is one of your ranked items). BTC is the market benchmark: give your own
+confidence for its next move even when it is not one of your picks. Omit the
+key only if BTC is not among the candidates."""
 
 
 @dataclass
 class LLMAnalysis:
     items: list[RankedItem]
+    anchor: AnchorItem | None = None
     fallback: bool = False
     error: str | None = None
 
@@ -163,12 +174,16 @@ def analyse(
             error = str(exc)
             logger.warning("LLM attempt %d rejected: %s", attempt, error)
             continue
+        # The anchor is a convenience, not part of the ranking: a missing or
+        # bad one must not cost a second API call. Fall back to the numbers.
+        anchor = validate_anchor(data, shortlist) or anchor_item(shortlist)
         logger.info("LLM selected %d items", len(items))
-        return LLMAnalysis(items=items)
+        return LLMAnalysis(items=items, anchor=anchor)
 
     logger.warning("Falling back to deterministic ranking: %s", error)
     return LLMAnalysis(
         items=deterministic_items(shortlist, n_crypto, n_stocks),
+        anchor=anchor_item(shortlist),
         fallback=True,
         error=error or "LLM unavailable",
     )
@@ -195,7 +210,7 @@ def build_user_prompt(
     return (
         f"Select the {n_crypto} best crypto and {n_stocks} best stock "
         "opportunities from these candidates and rank all of them 1.."
-        f"{n_crypto + n_stocks}.\n\n"
+        f"{n_crypto + n_stocks}. Also return the anchor object for BTC.\n\n"
         + json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
     )
 
@@ -251,7 +266,58 @@ def validate_selection(
     return sorted(parsed.items, key=lambda item: item.rank)
 
 
-def _check_numbers(item: RankedItem, candidate: Candidate) -> None:
+def validate_anchor(
+    data: object, shortlist: list[Candidate]
+) -> AnchorItem | None:
+    """The model's BTC view, or ``None`` when it is missing or contradicts the data.
+
+    Never raises: unlike the ranked items, the anchor is not part of the scan's
+    contract, so a bad one is logged and replaced by :func:`anchor_item`.
+    """
+    if not isinstance(data, dict):
+        return None
+    candidate = _anchor_candidate(shortlist)
+    if candidate is None:
+        return None
+    raw = data.get("anchor", data.get("market_anchor", data.get("btc")))
+    if not isinstance(raw, dict):
+        logger.info("LLM returned no anchor for %s", ANCHOR_SYMBOL)
+        return None
+    try:
+        anchor = AnchorItem(**raw)
+    except ValidationError as exc:
+        logger.warning("LLM anchor rejected: %s", _compact_validation_error(exc))
+        return None
+    if anchor.symbol != candidate.symbol:
+        logger.warning(
+            "LLM anchor is %s, expected %s; using the data instead",
+            anchor.symbol, candidate.symbol,
+        )
+        return None
+    try:
+        _check_numbers(anchor, candidate)
+    except SelectionError as exc:
+        logger.warning("LLM anchor rejected: %s", exc)
+        return None
+    return anchor
+
+
+def _anchor_candidate(shortlist: list[Candidate]) -> Candidate | None:
+    for candidate in shortlist:
+        if candidate.asset_type == "crypto" and candidate.symbol == ANCHOR_SYMBOL:
+            return candidate
+    return None
+
+
+def anchor_item(shortlist: list[Candidate]) -> AnchorItem | None:
+    """The deterministic BTC view, used when the model gives none."""
+    candidate = _anchor_candidate(shortlist)
+    if candidate is None:
+        return None
+    return AnchorItem(**_fallback_fields(candidate))
+
+
+def _check_numbers(item: AssetAnalysis, candidate: Candidate) -> None:
     if candidate.volatility_pct is not None and item.volatility_pct is not None:
         allowed = max(
             VOLATILITY_ABSOLUTE_TOLERANCE,
@@ -288,6 +354,11 @@ def deterministic_items(
 
 
 def _fallback_item(rank: int, candidate: Candidate) -> RankedItem:
+    return RankedItem(rank=rank, **_fallback_fields(candidate))
+
+
+def _fallback_fields(candidate: Candidate) -> dict:
+    """The deterministic narrative shared by a ranked row and the anchor."""
     volatility = candidate.volatility_pct
     momentum = candidate.momentum_pct or 0.0
     bias = "bullish" if momentum > 1 else "bearish" if momentum < -1 else "neutral"
@@ -303,25 +374,26 @@ def _fallback_item(rank: int, candidate: Candidate) -> RankedItem:
     thesis = ", ".join(parts) + "."
     risk_pct = min(max((volatility or 3.0) / 2.0, 1.0), 10.0) / 100.0
     stop, target = _levels(candidate.price, risk_pct, bias)
-    return RankedItem(
-        rank=rank,
-        asset_type=candidate.asset_type,
-        symbol=candidate.symbol,
-        name=candidate.name or candidate.symbol,
-        price=candidate.price,
-        volatility_pct=volatility,
-        direction_bias=bias,
-        confidence=int(round(40 + 55 * min(1.0, max(0.0, candidate.score)))),
-        thesis=thesis[:600],
-        key_risks=[
+    return {
+        "asset_type": candidate.asset_type,
+        "symbol": candidate.symbol,
+        "name": candidate.name or candidate.symbol,
+        "price": candidate.price,
+        "volatility_pct": volatility,
+        "direction_bias": bias,
+        "confidence": int(round(40 + 55 * min(1.0, max(0.0, candidate.score)))),
+        "thesis": thesis[:600],
+        "key_risks": [
             "Ranked by the deterministic fallback: no narrative analysis.",
             "Volatility cuts both ways; a stop is essential.",
         ],
-        suggested_entry_zone=f"{_fmt(candidate.price * 0.99)}-{_fmt(candidate.price * 1.01)}",
-        suggested_stop=stop,
-        suggested_target=target,
-        time_horizon="1-3 days",
-    )
+        "suggested_entry_zone": (
+            f"{_fmt(candidate.price * 0.99)}-{_fmt(candidate.price * 1.01)}"
+        ),
+        "suggested_stop": stop,
+        "suggested_target": target,
+        "time_horizon": "1-3 days",
+    }
 
 
 def _levels(price: float, risk_pct: float, bias: str) -> tuple[float, float]:

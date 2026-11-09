@@ -83,10 +83,9 @@ class Headline(BaseModel):
     published_at: str = ""
 
 
-class RankedItem(BaseModel):
-    """One row of the final Top 10, as returned by the LLM (or the fallback)."""
+class AssetAnalysis(BaseModel):
+    """The model's view of one asset: shared by ranked rows and the BTC anchor."""
 
-    rank: int = Field(ge=1, le=10)
     asset_type: AssetType
     symbol: str
     name: str = ""
@@ -113,10 +112,27 @@ class RankedItem(BaseModel):
         return cleaned[:6]
 
 
+class RankedItem(AssetAnalysis):
+    """One row of the final Top 10, as returned by the LLM (or the fallback)."""
+
+    rank: int = Field(ge=1, le=10)
+
+
+class AnchorItem(AssetAnalysis):
+    """The market anchor (BTC), analysed every scan whether or not it is ranked.
+
+    ``rank`` is set only when BTC also made the Top 10; the row is pinned on the
+    dashboard either way, so BTC is never missing from the page.
+    """
+
+    rank: int | None = None
+
+
 class LLMResponse(BaseModel):
     """Envelope the model must produce."""
 
     items: list[RankedItem]
+    anchor: AnchorItem | None = None
 
     @model_validator(mode="after")
     def _ten_ranks(self) -> "LLMResponse":
@@ -140,6 +156,9 @@ class ScanResult(BaseModel):
     llm_fallback: bool = False
     llm_error: str | None = None
     items: list[RankedItem] = Field(default_factory=list)
+    # BTC's own view, always present so the dashboard can pin it regardless of
+    # whether it made the Top 10. It is not an 11th ranked opportunity.
+    anchor: AnchorItem | None = None
     sources_used: list[str] = Field(default_factory=list)
     sources_failed: list[SourceStatus] = Field(default_factory=list)
     discrepancies: list[str] = Field(default_factory=list)

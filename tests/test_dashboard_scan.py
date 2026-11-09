@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 from app.main import create_app
 from app.runtime_config import RuntimeConfig
 from conftest import make_scan_settings, make_settings
-from scanner.schemas import RankedItem, ScanResult
+from scanner.schemas import AnchorItem, RankedItem, ScanResult
 from scanner.storage import SqliteStore
 
 PASSWORD = "test-secret"
@@ -55,6 +55,11 @@ def sample_result():
                 suggested_target=560.0, time_horizon="1-3 days",
             )
         ],
+        anchor=AnchorItem(
+            asset_type="crypto", symbol="BTC", name="Bitcoin", price=67_120.0,
+            volatility_pct=3.9, direction_bias="bullish", confidence=55,
+            thesis="Holding above the range low.",
+        ),
         sources_used=["coingecko", "twelvedata"],
         new_symbols=["AMD"],
     )
@@ -95,6 +100,18 @@ def test_the_stored_scan_is_served_in_full(tmp_path):
     assert item["key_risks"] == ["No volume confirmation"]
     assert body["history"][0]["top"] == "AMD"
     assert body["history"][0]["pick_count"] == 1
+
+
+def test_btc_is_served_as_the_anchor(tmp_path):
+    """The page pins BTC; the scan must hand it over whether or not it ranked."""
+    tc, scan_settings = build(tmp_path)
+    SqliteStore(scan_settings.db_path()).save(sample_result())
+
+    latest = get(tc).json()["latest"]
+    assert latest["anchor"]["symbol"] == "BTC"
+    assert latest["anchor"]["confidence"] == 55
+    assert latest["anchor"]["volatility_pct"] == 3.9
+    assert all(item["symbol"] != "BTC" for item in latest["items"])
 
 
 def test_no_provider_key_reaches_the_browser(tmp_path):

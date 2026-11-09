@@ -61,7 +61,9 @@ running, what is open, what was scanned, then what to add:
   with price, volatility, direction bias, confidence, suggested entry/stop/target, horizon,
   thesis and key risks; a **NEW** tag on symbols that were not in the previous run; the source
   funnel, which sources failed, the CoinGecko/CMC disagreements, earlier runs today, and when
-  the next scan is due. It is fed by `GET /api/dashboard/opportunities` (session cookie, not
+  the next scan is due. **BTC is pinned first as the market anchor**, so the page normally
+  shows eleven rows — if BTC also made the top ten its row carries the rank (`#7`) instead of
+  appearing twice. It is fed by `GET /api/dashboard/opportunities` (session cookie, not
   the scanner's `X-API-Key`, so the key never reaches the browser), refreshes every 60 s, and
   is strictly read-only: **nothing on this page can place a trade from a scan.**
 - **Your trades** — one row per trade the bot will take, each with its **name**, its saved
@@ -136,6 +138,10 @@ documented stub that does nothing.
 4. **One DeepSeek call** — the top 15 of each side, strict JSON, validated against the data:
    unknown tickers, wrong counts and contradictory prices/volatility are rejected. One
    corrective retry, then a deterministic fallback flagged `llm_fallback: true`.
+   The call also returns an **anchor**: the model's own view of **BTC**, which is added to the
+   candidates even when its low volatility keeps it out of the shortlist. A missing or
+   contradicting anchor is replaced by the computed figures rather than costing a retry, so
+   every stored scan carries one.
 5. **Store + notify** — every scan is kept (SQLite, or JSON files) and optionally sent to
    Telegram with NEW markers and a "not financial advice" footer.
 
@@ -215,7 +221,7 @@ app/
                       close, alert-template, opportunities)
   static/dashboard.html  Self-contained dashboard front-end (no build step)
 scanner/              Informational market scanner: providers, scoring, LLM, storage, API
-tests/                pytest suite (357 tests)
+tests/                pytest suite (365 tests)
 Procfile           web: uvicorn app.main:app --port $PORT
 runtime.txt        Python 3.12
 railway.json       Railway deploy config (healthcheck on /health)
@@ -333,7 +339,7 @@ curl -X POST http://localhost:8000/webhook/tradingview ^
   -d "{\"secret\":\"YOUR_SECRET\",\"symbol\":\"BTCUSDT\",\"side\":\"buy\",\"qty\":0.001,\"leverage\":5}"
 ```
 
-Run tests: `pytest -q` (357 tests, no real API calls).
+Run tests: `pytest -q` (365 tests, no real API calls).
 
 ## 6. Going live — checklist
 

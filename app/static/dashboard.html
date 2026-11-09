@@ -120,6 +120,9 @@
   .scanrow .tag{font-size:10px;letter-spacing:.05em;text-transform:uppercase;color:var(--muted);
                 border:1px solid var(--border);border-radius:999px;padding:1px 7px}
   .scanrow .tag.new{color:var(--accent);border-color:var(--accent)}
+  .scanrow.anchor{background:rgba(76,141,255,.07);border:1px solid rgba(76,141,255,.35);
+                  border-radius:10px;padding:10px 12px;margin-bottom:10px}
+  .scanrow .tag.anchor{color:var(--accent);border-color:var(--accent)}
   .scanrow .px{margin-left:auto;font-weight:600;font-variant-numeric:tabular-nums}
   .scanrow .bias{font-size:12px;font-weight:700}
   .scanrow .bias.bull{color:var(--buy)} .scanrow .bias.bear{color:var(--sell)}
@@ -240,7 +243,9 @@
       <div class="secthd">
         <h2>Market scan — informational only</h2>
         <p class="sub">Four ranked scans a day from CoinGecko, CoinMarketCap, Bybit,
-           Twelve Data and DeepSeek. This bot never trades from these picks.</p>
+           Twelve Data and DeepSeek. BTC is always pinned first as the market anchor —
+           if it also made the top ten, its rank shows there. This bot never trades
+           from these picks.</p>
       </div>
 
       <div class="card">
@@ -616,6 +621,44 @@ function fmtUntil(iso) {
   return "in " + hours + "h" + (rest ? " " + rest + "m" : "");
 }
 
+function scanRowHtml(it, opts) {
+  const bull = it.direction_bias === "bullish";
+  const vol = it.volatility_pct === null || it.volatility_pct === undefined
+    ? "vol —" : "vol " + Number(it.volatility_pct).toFixed(1) + "%";
+  const levels = [
+    it.suggested_entry_zone ? "entry " + it.suggested_entry_zone : null,
+    it.suggested_stop !== null && it.suggested_stop !== undefined
+      ? "stop " + fmtScanPrice(it.suggested_stop) : null,
+    it.suggested_target !== null && it.suggested_target !== undefined
+      ? "target " + fmtScanPrice(it.suggested_target) : null,
+    it.time_horizon || null,
+  ].filter(Boolean).join(" · ");
+  const risks = (it.key_risks && it.key_risks.length)
+    ? `<details><summary>${it.key_risks.length} risk${it.key_risks.length === 1 ? "" : "s"}</summary>
+         <ul>${it.key_risks.map(r => `<li>${esc(r)}</li>`).join("")}</ul></details>`
+    : "";
+  const rank = opts.anchor
+    ? (it.rank ? `<span class="rk mono">#${it.rank}</span>` : '<span class="rk">★</span>')
+    : `<span class="rk mono">${it.rank}</span>`;
+  const typeTag = opts.anchor
+    ? '<span class="tag anchor">market anchor</span>'
+    : `<span class="tag">${esc(it.asset_type)}</span>`;
+  return `<div class="scanrow${opts.anchor ? " anchor" : ""}">
+    <div class="top">
+      ${rank}
+      <span class="sym2">${esc(it.symbol)}</span>
+      ${typeTag}
+      ${opts.isNew ? '<span class="tag new">new</span>' : ""}
+      <span class="bias ${bull ? "bull" : "bear"}">${bull ? "BULL" : "BEAR"}</span>
+      <span class="conf mono">conf ${it.confidence} · ${vol}</span>
+      <span class="px mono">${fmtScanPrice(it.price)}</span>
+    </div>
+    ${levels ? `<div class="levels mono">${esc(levels)}</div>` : ""}
+    <div class="th">${esc(it.thesis)}</div>
+    ${risks}
+  </div>`;
+}
+
 function renderScan(s) {
   const latest = s.latest;
   const meta = [];
@@ -663,38 +706,14 @@ function renderScan(s) {
   }
 
   const newSet = new Set(latest.new_symbols || []);
-  const items = latest.items || [];
-  $("scanRows").innerHTML = items.map(it => {
-    const bull = it.direction_bias === "bullish";
-    const vol = it.volatility_pct === null || it.volatility_pct === undefined
-      ? "vol —" : "vol " + Number(it.volatility_pct).toFixed(1) + "%";
-    const levels = [
-      it.suggested_entry_zone ? "entry " + it.suggested_entry_zone : null,
-      it.suggested_stop !== null && it.suggested_stop !== undefined
-        ? "stop " + fmtScanPrice(it.suggested_stop) : null,
-      it.suggested_target !== null && it.suggested_target !== undefined
-        ? "target " + fmtScanPrice(it.suggested_target) : null,
-      it.time_horizon || null,
-    ].filter(Boolean).join(" · ");
-    const risks = (it.key_risks && it.key_risks.length)
-      ? `<details><summary>${it.key_risks.length} risk${it.key_risks.length === 1 ? "" : "s"}</summary>
-           <ul>${it.key_risks.map(r => `<li>${esc(r)}</li>`).join("")}</ul></details>`
-      : "";
-    return `<div class="scanrow">
-      <div class="top">
-        <span class="rk mono">${it.rank}</span>
-        <span class="sym2">${esc(it.symbol)}</span>
-        <span class="tag">${esc(it.asset_type)}</span>
-        ${newSet.has(it.symbol) ? '<span class="tag new">new</span>' : ""}
-        <span class="bias ${bull ? "bull" : "bear"}">${bull ? "BULL" : "BEAR"}</span>
-        <span class="conf mono">conf ${it.confidence} · ${vol}</span>
-        <span class="px mono">${fmtScanPrice(it.price)}</span>
-      </div>
-      ${levels ? `<div class="levels mono">${esc(levels)}</div>` : ""}
-      <div class="th">${esc(it.thesis)}</div>
-      ${risks}
-    </div>`;
-  }).join("");
+  // BTC is pinned as the market anchor whether or not it made the Top 10. When
+  // it did rank, its row carries the rank and is not repeated in the list.
+  const anchor = latest.anchor || null;
+  const items = (latest.items || []).filter(it => !anchor || it.symbol !== anchor.symbol);
+  const rows = [];
+  if (anchor) rows.push(scanRowHtml(anchor, { anchor: true, isNew: false }));
+  rows.push(...items.map(it => scanRowHtml(it, { anchor: false, isNew: newSet.has(it.symbol) })));
+  $("scanRows").innerHTML = rows.join("");
 
   const extras = [];
   const c = latest.candidates_considered || {};

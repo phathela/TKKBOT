@@ -158,6 +158,10 @@ def test_dry_run_needs_no_network_and_returns_a_full_ranking(tmp_path):
     assert [i.rank for i in result.items] == list(range(1, 11))
     assert all(i.symbol not in {"USDT", "WBTC"} for i in result.items)
     assert not (tmp_path / "opportunities_latest.json").exists()
+    # BTC is analysed even when it does not rank, so the dashboard can pin it.
+    assert result.anchor is not None
+    assert result.anchor.symbol == "BTC"
+    assert result.anchor.price == 67_120.0
 
 
 def test_dry_run_marks_new_symbols_against_the_store(tmp_path):

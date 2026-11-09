@@ -268,3 +268,86 @@ def test_bearish_fallback_stop_is_above_price():
     assert items[0].direction_bias == "bearish"
     assert items[0].suggested_stop > 100.0
     assert items[0].suggested_target < 100.0
+
+
+# --- the BTC anchor --------------------------------------------------------
+
+
+def anchor_payload(**overrides):
+    base = {
+        "asset_type": "crypto",
+        "symbol": "BTC",
+        "price": 60_000,
+        "volatility_pct": 12.0,
+        "direction_bias": "bearish",
+        "confidence": 44,
+        "thesis": "Testing the top of the range.",
+        "key_risks": ["A break below support"],
+    }
+    base.update(overrides)
+    return base
+
+
+def with_anchor(anchor, **item_overrides):
+    return json.dumps({
+        "items": [
+            item(1, "crypto", "ETH", 3_000, 8.0),
+            item(2, "stock", "NVDA", 120, 6.0),
+        ],
+        "anchor": anchor,
+    })
+
+
+def test_the_model_anchor_is_kept():
+    analysis = analyse(FakeClient(with_anchor(anchor_payload())))
+    assert analysis.anchor.symbol == "BTC"
+    assert analysis.anchor.confidence == 44
+    assert analysis.anchor.direction_bias == "bearish"
+    assert analysis.fallback is False
+
+
+def test_a_missing_anchor_is_filled_from_the_data():
+    client = FakeClient(VALID)  # no "anchor" key at all
+    analysis = analyse(client)
+    assert len(client.calls) == 1                      # no corrective retry
+    assert analysis.anchor.symbol == "BTC"
+    assert analysis.anchor.price == 60_000
+    assert analysis.anchor.volatility_pct == 12.0
+
+
+def test_an_anchor_that_contradicts_the_price_is_ignored():
+    client = FakeClient(with_anchor(anchor_payload(price=1.0)))
+    analysis = analyse(client)
+    assert len(client.calls) == 1
+    assert analysis.anchor.price == 60_000             # the computed figure
+
+
+def test_an_anchor_for_the_wrong_symbol_is_ignored():
+    analysis = analyse(FakeClient(with_anchor(anchor_payload(symbol="ETH"))))
+    assert analysis.anchor.symbol == "BTC"
+
+
+def test_the_btc_alias_is_accepted():
+    reply = json.dumps({
+        "items": [
+            item(1, "crypto", "ETH", 3_000, 8.0),
+            item(2, "stock", "NVDA", 120, 6.0),
+        ],
+        "btc": anchor_payload(confidence=61),
+    })
+    assert analyse(FakeClient(reply)).anchor.confidence == 61
+
+
+def test_the_fallback_still_provides_an_anchor():
+    analysis = analyse(FakeClient(ProviderError("down"), ProviderError("down")))
+    assert analysis.fallback is True
+    assert analysis.anchor.symbol == "BTC"
+
+
+def test_anchor_is_none_without_a_btc_candidate():
+    shortlist = [candidate("crypto", "ETH", 3_000)]
+    reply = json.dumps({"items": [item(1, "crypto", "ETH", 3_000, 8.0)]})
+    analysis = analyse(
+        FakeClient(reply), n_crypto=1, n_stocks=0, shortlist=shortlist
+    )
+    assert analysis.anchor is None
