@@ -39,6 +39,11 @@ class FinnhubProvider(Provider):
         self._delay = max(0.0, request_delay_seconds)
         self._sleep = sleep
 
+    def _headers(self) -> dict[str, str]:
+        # The header form keeps the key out of the URL (and therefore out of any
+        # request log); Finnhub accepts it on every endpoint we call.
+        return {"X-Finnhub-Token": self._api_key}
+
     # -- quotes ------------------------------------------------------------
 
     def quotes(self, symbols: list[str]) -> dict[str, StockQuote]:
@@ -51,7 +56,9 @@ class FinnhubProvider(Provider):
                 self._sleep(self._delay)
             try:
                 quote = self.http.get_json(
-                    QUOTE_URL, params={"symbol": symbol, "token": self._api_key}
+                    QUOTE_URL,
+                    params={"symbol": symbol},
+                    headers=self._headers(),
                 )
             except ProviderError as exc:
                 logger.warning("Finnhub quote failed for %s: %s", symbol, exc)
@@ -84,7 +91,8 @@ class FinnhubProvider(Provider):
             try:
                 payload = self.http.get_json(
                     METRIC_URL,
-                    params={"symbol": symbol, "metric": "all", "token": self._api_key},
+                    params={"symbol": symbol, "metric": "all"},
+                    headers=self._headers(),
                 )
             except ProviderError as exc:
                 logger.warning("Finnhub metric failed for %s: %s", symbol, exc)
@@ -114,8 +122,8 @@ class FinnhubProvider(Provider):
                         "symbol": symbol,
                         "from": start,
                         "to": today.isoformat(),
-                        "token": self._api_key,
                     },
+                    headers=self._headers(),
                 )
             except ProviderError as exc:
                 logger.warning("Finnhub news failed for %s: %s", symbol, exc)

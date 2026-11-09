@@ -9,7 +9,7 @@ from __future__ import annotations
 import hmac
 import logging
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Query
 from fastapi.concurrency import run_in_threadpool
 
 from .config import ConfigError, ScanSettings, get_scan_settings
@@ -58,24 +58,39 @@ def create_opportunities_router(settings: ScanSettings | None = None) -> APIRout
         scans = get_store().history(days=days)
         return {"days": days, "count": len(scans), "scans": scans}
 
-    @router.post("/scan", dependencies=[Depends(require_key)])
-    async def scan_now() -> dict:
+    @router.post("/scan", status_code=202, dependencies=[Depends(require_key)])
+    async def scan_now(background: BackgroundTasks) -> dict:
+        """Start a scan and return at once; the run takes several minutes.
+
+        It cannot be synchronous: a scan outlives Railway's ~60 s HTTP timeout
+        (Twelve Data's free tier is paced at one request a minute), so the
+        caller would always see a dropped connection. Poll
+        ``/opportunities/latest`` for the result instead.
+        """
         scan_settings = current_settings()
         try:
             scan_settings.ensure_ready()
         except ConfigError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
-        try:
-            result = await run_in_threadpool(
-                _run_scan, scan_settings, get_store()
-            )
-        except LockBusy as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
-        except ConfigError as exc:
-            raise HTTPException(status_code=503, detail=str(exc)) from exc
-        return result.model_dump()
+        background.add_task(_scan_task, scan_settings, get_store())
+        return {
+            "started": True,
+            "detail": "Scan started; poll /opportunities/latest in a few minutes.",
+        }
 
     return router
+
+
+async def _scan_task(settings: ScanSettings, store: ScanStore) -> None:
+    """Run the scan off the event loop, after the 202 has been sent."""
+    try:
+        await run_in_threadpool(_run_scan, settings, store)
+    except LockBusy:
+        logger.info("Scan trigger ignored: another scan is already running")
+    except ConfigError as exc:
+        logger.error("Triggered scan not configured: %s", exc)
+    except Exception:  # noqa: BLE001 — a background scan must never crash the app
+        logger.exception("Triggered scan failed")
 
 
 def _run_scan(settings: ScanSettings, store: ScanStore):

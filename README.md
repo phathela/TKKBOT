@@ -150,7 +150,7 @@ All three need `X-API-Key: $OPPORTUNITIES_API_KEY`; when that variable is empty 
 |---|---|
 | `GET /opportunities/latest` | the most recent stored scan (404 before the first) |
 | `GET /opportunities/history?days=7` | stored scans inside the window |
-| `POST /opportunities/scan` | run one now (409 if a scan is already running) |
+| `POST /opportunities/scan` | start a scan now; returns **202** immediately (a run takes minutes), poll `/latest` for the result |
 
 ```bash
 curl -H "X-API-Key: $OPPORTUNITIES_API_KEY" \
@@ -164,6 +164,12 @@ python -m scanner.run --dry-run --no-telegram   # sample data; no keys, no netwo
 python -m scanner.run --no-telegram             # one live scan, printed summary
 python -m scanner.run --json                    # ...as JSON
 ```
+
+`POST /opportunities/scan` runs the same thing inside the web service and answers 202
+straight away: a full scan outlives Railway's ~60-second HTTP timeout (Twelve Data's free
+tier is paced at one request a minute), so a synchronous call would always be disconnected.
+Poll `/opportunities/latest` instead. A second trigger while a scan is running is ignored
+and logged — the scan lock is the authority, not the endpoint.
 
 `--dry-run` uses `scanner/sample_data/` and never calls a provider or the LLM; use it to check
 scoring and message formatting before adding keys.

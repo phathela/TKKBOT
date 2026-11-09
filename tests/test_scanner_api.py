@@ -3,6 +3,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from conftest import make_scan_settings
 
+import scanner.api as scanner_api
 from scanner.api import create_opportunities_router
 from scanner.schemas import RankedItem, ScanResult
 from scanner.storage import SqliteStore
@@ -91,6 +92,23 @@ def test_history_days_is_bounded(tmp_path):
         headers={"X-API-Key": settings.opportunities_api_key},
     )
     assert response.status_code == 422
+
+
+def test_scan_returns_202_and_schedules_the_scan(tmp_path, monkeypatch):
+    calls = []
+
+    async def fake_task(settings, store):
+        calls.append(True)
+
+    monkeypatch.setattr(scanner_api, "_scan_task", fake_task)
+    client, settings = make_client(tmp_path)
+    response = client.post(
+        "/opportunities/scan", headers={"X-API-Key": settings.opportunities_api_key}
+    )
+    assert response.status_code == 202
+    assert response.json()["started"] is True
+    # TestClient runs added background tasks after sending the response.
+    assert calls == [True]
 
 
 def test_scan_refuses_to_run_without_configuration(tmp_path):

@@ -7,6 +7,7 @@ import pytest
 from scanner.providers.base import HttpClient, ProviderError
 from scanner.providers.bybit import BybitProvider
 from scanner.providers.coingecko import CoinGeckoProvider
+from scanner.providers.finnhub import FinnhubProvider
 from scanner.providers.twelvedata import TwelveDataProvider
 
 
@@ -348,3 +349,28 @@ def test_twelvedata_chunk_failure_degrades_to_no_quotes():
 
     http, _ = client_with(handler, retries=0)
     assert TwelveDataProvider(http, "k").quotes(["NVDA"]) == {}
+
+
+# --- Finnhub ---------------------------------------------------------------
+
+
+def test_finnhub_sends_the_key_in_a_header_not_the_url():
+    seen = []
+
+    def handler(request):
+        seen.append(
+            (request.url.params.get("token"),
+             request.headers.get("x-finnhub-token"))
+        )
+        return httpx.Response(200, json={
+            "c": 100, "h": 105, "l": 95, "pc": 98,
+        })
+
+    http, _ = client_with(handler)
+    quotes = FinnhubProvider(http, "fh-key", request_delay_seconds=0).quotes(
+        ["NVDA"]
+    )
+    assert quotes["NVDA"].price == 100
+    assert quotes["NVDA"].change_pct == pytest.approx(2.0408, abs=1e-3)
+    # The key must never be a query parameter, where the URL logger would see it.
+    assert seen == [(None, "fh-key")]

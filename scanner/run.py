@@ -542,6 +542,10 @@ def _setup_logging(level: str) -> None:
         stream=sys.stdout,
         force=True,
     )
+    # httpx logs full request URLs, and some providers put the API key in the
+    # query string. Quiet those loggers so no credential reaches stdout.
+    for noisy in ("httpx", "httpcore"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
 
 
 if __name__ == "__main__":
