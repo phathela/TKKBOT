@@ -109,6 +109,81 @@ are never touched when you remove a pair from the list.
 Aliases accepted: `action`/`direction` for side, `quantity`/`contracts` for qty,
 `takeProfit`/`stopLoss`/`targetPrice`/`stopPrice` for tp/sl.
 
+## Market scanner (informational — never trades)
+
+A self-contained `scanner/` package ranks **5 cryptocurrencies + 5 tech stocks four times a
+day** and stores the result. It sits deliberately outside the trading path: nothing in
+`scanner/` signs a Bybit order or touches the webhook, and `OPPORTUNITIES_FEED_TO_BOT` is a
+documented stub that does nothing.
+
+### How a scan works
+
+1. **Universe** — top ~250 coins by market cap from CoinGecko, filtered to
+   `MIN_CRYPTO_MCAP_USD` / `MIN_CRYPTO_VOLUME_USD` and stripped of stablecoins plus wrapped
+   and staked derivatives. Stocks come from `scanner/tech_universe.json` (plus any top movers
+   the provider returns) above `MIN_STOCK_AVG_VOLUME`.
+2. **Metrics** — 24h volatility `((high − low) / low) × 100`, volume spike, momentum,
+   distance from the 24h high/low, ATR(14) from Bybit daily candles, and order-book depth.
+3. **Pre-score in Python** — a deterministic weighted composite (default 40% volatility, 25%
+   volume spike, 20% momentum, 15% liquidity) read from `scanner/scoring_weights.json`.
+4. **One DeepSeek call** — the top 15 of each side, strict JSON, validated against the data:
+   unknown tickers, wrong counts and contradictory prices/volatility are rejected. One
+   corrective retry, then a deterministic fallback flagged `llm_fallback: true`.
+5. **Store + notify** — every scan is kept (SQLite, or JSON files) and optionally sent to
+   Telegram with NEW markers and a "not financial advice" footer.
+
+US market hours are respected: outside Mon–Fri 09:30–16:00 New York time the stock rows are
+flagged stale, but crypto is still scanned. Every provider has a timeout, retries with
+exponential backoff, 429/`Retry-After` handling and per-run caching; a dead source is recorded
+in `sources_failed` and the scan carries on.
+
+> **Investing.com is not used.** It has no official public API, and scraping it violates its
+> terms and breaks behind Cloudflare. `scanner/providers/investingcom.py` is a disabled stub
+> that explains this; the equivalent data comes from Twelve Data / Finnhub / Yahoo.
+
+### Endpoints
+
+All three need `X-API-Key: $OPPORTUNITIES_API_KEY`; when that variable is empty they return
+503 rather than being open.
+
+| Route | Purpose |
+|---|---|
+| `GET /opportunities/latest` | the most recent stored scan (404 before the first) |
+| `GET /opportunities/history?days=7` | stored scans inside the window |
+| `POST /opportunities/scan` | run one now (409 if a scan is already running) |
+
+```bash
+curl -H "X-API-Key: $OPPORTUNITIES_API_KEY" \
+  https://<project>.up.railway.app/opportunities/latest
+```
+
+### Running it
+
+```bash
+python -m scanner.run --dry-run --no-telegram   # sample data; no keys, no network
+python -m scanner.run --no-telegram             # one live scan, printed summary
+python -m scanner.run --json                    # ...as JSON
+```
+
+`--dry-run` uses `scanner/sample_data/` and never calls a provider or the LLM; use it to check
+scoring and message formatting before adding keys.
+
+### Railway
+
+Preferred: a **separate cron service** in the same project, built from the same repo, with
+command `python -m scanner.run`, a Railway cron schedule of `0 0,6,12,18 * * *` (UTC), its own
+`/data` volume mounted at `/data`, and the scanner variables from `.env.example`. The cron
+service does not need the Bybit keys.
+
+Alternative: set `SCAN_SCHEDULER_ENABLED=true` on the web service. It starts a lightweight
+thread firing at `SCAN_TIMES_UTC`; it is off by default because a redeploy restarts the clock
+and a long sleep is easy to lose. Do not run both — the scan lock makes the second caller back
+off, but it still costs a call.
+
+Required variables: `DEEPSEEK_API_KEY`, `COINGECKO_API_KEY`, `CMC_API_KEY`, and either
+`TWELVEDATA_API_KEY` or `FINNHUB_API_KEY`. A missing key fails fast with a message naming the
+variable; key *values* are never logged (the startup line prints `on`/`off` only).
+
 ## Repository layout
 
 ```
@@ -121,7 +196,8 @@ app/
   runtime_config.py   Dashboard-tunable settings, persisted to a file (Railway volume)
   dashboard.py        /dashboard page + /api/dashboard/* (login, state, config, pairs, close)
   static/dashboard.html  Self-contained dashboard front-end (no build step)
-tests/                pytest suite (204 tests)
+scanner/              Informational market scanner: providers, scoring, LLM, storage, API
+tests/                pytest suite (344 tests)
 Procfile           web: uvicorn app.main:app --port $PORT
 runtime.txt        Python 3.12
 railway.json       Railway deploy config (healthcheck on /health)
@@ -239,7 +315,7 @@ curl -X POST http://localhost:8000/webhook/tradingview ^
   -d "{\"secret\":\"YOUR_SECRET\",\"symbol\":\"BTCUSDT\",\"side\":\"buy\",\"qty\":0.001,\"leverage\":5}"
 ```
 
-Run tests: `pytest -q` (204 tests, no real API calls).
+Run tests: `pytest -q` (344 tests, no real API calls).
 
 ## 6. Going live — checklist
 

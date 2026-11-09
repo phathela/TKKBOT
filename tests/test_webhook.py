@@ -1,4 +1,5 @@
 import math
+import re
 
 import pytest
 from fastapi.testclient import TestClient
@@ -143,7 +144,7 @@ def test_logs_never_contain_the_webhook_secret(capsys):
     out = capsys.readouterr().out
     assert "test-secret" not in out
     assert "Webhook received" in out          # still logged, just masked
-    assert '"secret":"***"' in out
+    assert re.search(r'"secret"\s*:\s*"\*\*\*"', out)
 
 
 def test_logs_mask_the_secret_even_on_a_rejected_payload(capsys):

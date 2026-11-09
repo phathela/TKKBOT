@@ -1,0 +1,12 @@
+[
+  {"symbol": "NVDA", "name": "NVIDIA", "price": 124.6, "high": 129.4, "low": 121.8, "volume": 410000000, "avg_volume": 290000000, "change_pct": 3.9, "source": "sample", "stale": false},
+  {"symbol": "AMD", "name": "Advanced Micro Devices", "price": 152.3, "high": 158.9, "low": 149.2, "volume": 62000000, "avg_volume": 48000000, "change_pct": -2.4, "source": "sample", "stale": false},
+  {"symbol": "TSLA", "name": "Tesla", "price": 248.9, "high": 259.6, "low": 244.1, "volume": 118000000, "avg_volume": 96000000, "change_pct": 4.7, "source": "sample", "stale": false},
+  {"symbol": "PLTR", "name": "Palantir", "price": 41.2, "high": 43.8, "low": 39.9, "volume": 74000000, "avg_volume": 51000000, "change_pct": 5.2, "source": "sample", "stale": false},
+  {"symbol": "SMCI", "name": "Super Micro Computer", "price": 36.8, "high": 40.1, "low": 35.2, "volume": 96000000, "avg_volume": 43000000, "change_pct": -7.8, "source": "sample", "stale": false},
+  {"symbol": "COIN", "name": "Coinbase", "price": 214.5, "high": 223.9, "low": 208.7, "volume": 18000000, "avg_volume": 12000000, "change_pct": 2.9, "source": "sample", "stale": false},
+  {"symbol": "MSFT", "name": "Microsoft", "price": 418.2, "high": 424.6, "low": 414.8, "volume": 22000000, "avg_volume": 20000000, "change_pct": 0.9, "source": "sample", "stale": false},
+  {"symbol": "META", "name": "Meta Platforms", "price": 572.4, "high": 589.1, "low": 566.2, "volume": 16000000, "avg_volume": 14000000, "change_pct": -1.4, "source": "sample", "stale": false},
+  {"symbol": "AAPL", "name": "Apple", "price": 226.8, "high": 230.2, "low": 224.9, "volume": 48000000, "avg_volume": 52000000, "change_pct": 0.4, "source": "sample", "stale": false},
+  {"symbol": "MU", "name": "Micron Technology", "price": 104.7, "high": 111.3, "low": 102.4, "volume": 39000000, "avg_volume": 22000000, "change_pct": 6.1, "source": "sample", "stale": false}
+]

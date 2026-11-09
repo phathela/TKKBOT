@@ -1,0 +1,9 @@
+{
+  "_comment": "Watchlist for the stock half of the scan. Add or remove tickers freely; the scanner also takes any other liquid quote its provider returns.",
+  "symbols": [
+    "NVDA", "AMD", "TSLA", "PLTR", "SMCI", "COIN", "MSTR",
+    "AAPL", "MSFT", "META", "GOOGL", "AMZN", "AVGO", "MU",
+    "ARM", "SNOW", "CRWD", "NET", "SHOP", "UBER", "MRVL",
+    "QCOM", "ORCL", "CRM", "ADBE", "NOW"
+  ]
+}

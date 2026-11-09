@@ -13,6 +13,8 @@ from .dashboard import create_dashboard_router
 from .logger import setup_logging
 from .runtime_config import RuntimeConfig
 from .safety import Cooldown, SafetyError
+from scanner.api import create_opportunities_router
+from scanner.scheduler import start_if_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +65,11 @@ def create_app(
         }
 
     app.include_router(create_dashboard_router(settings, client, runtime))
+    # Market scanner: read-only, informational, and entirely outside the
+    # trading path. Keyed separately (X-API-Key) from the dashboard.
+    app.include_router(create_opportunities_router())
+    # No-op unless SCAN_SCHEDULER_ENABLED=true; a Railway cron is preferred.
+    start_if_enabled()
 
     @app.post("/webhook/tradingview")
     async def tradingview_webhook(request: Request):

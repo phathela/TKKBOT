@@ -1,0 +1,7 @@
+{
+  "_comment": "Deterministic pre-score weights. They are normalised to sum to 1, so relative size is all that matters. Momentum is scored on magnitude (a big move either way is interesting).",
+  "volatility": 0.40,
+  "volume_spike": 0.25,
+  "momentum": 0.20,
+  "liquidity": 0.15
+}
